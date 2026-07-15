@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>字幕显示方案对比</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #101114; color: #f5f2ee; font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 34px 28px 50px; }
+  h1 { margin: 0 0 10px; font-size: 30px; letter-spacing: .02em; }
+  .lead { margin: 0 0 28px; color: #aaa7a1; font-size: 15px; }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  .option { overflow: hidden; border: 1px solid #34363c; border-radius: 18px; background: #191a1f; cursor: pointer; transition: .18s ease; }
+  .option:hover { transform: translateY(-3px); border-color: #b89b70; }
+  .option.selected { border-color: #e8bd77; box-shadow: 0 0 0 2px #e8bd7740; }
+  .preview { position: relative; aspect-ratio: 9 / 16; margin: 10px; overflow: hidden; border-radius: 12px; background: #3b302c url('/files/preview.png') center / cover; }
+  .shade { position: absolute; inset: 0; background: linear-gradient(180deg, #00000018, #00000048 70%, #00000088); }
+  .caption-stack { position: absolute; left: 7%; right: 7%; bottom: 8%; display: grid; gap: 28px; }
+  .caption { padding: 11px 12px; color: white; background: #261723e8; font-size: 17px; line-height: 1.15; font-weight: 700; text-align: center; text-shadow: 0 1px 1px #000; white-space: nowrap; }
+  .caption.old { white-space: normal; }
+  .caption.muted { opacity: .64; transform: scale(.88); transform-origin: center; }
+  .meta { padding: 0 18px 18px; }
+  .tag { display: inline-block; margin-bottom: 8px; color: #e8bd77; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  h2 { margin: 0 0 7px; font-size: 19px; }
+  .meta p { min-height: 48px; margin: 0; color: #aaa7a1; font-size: 13px; line-height: 1.55; }
+  .question { margin-top: 26px; padding: 15px 18px; border: 1px solid #34363c; border-radius: 12px; color: #d9d5ce; background: #191a1f; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .preview { max-height: 540px; } }
+</style>
+</head>
+<body>
+  <main class="page">
+    <h1>字幕显示方案</h1>
+    <p class="lead">目标：单行、去掉逗号句号，并避免最后只剩几个字。点击你更倾向的方案。</p>
+    <section class="grid">
+      <article class="option" data-choice="strict-single-line" onclick="toggleSelect(this)">
+        <div class="preview"><div class="shade"></div><div class="caption-stack"><div class="caption">婚姻二字写起来只有两笔</div><div class="caption">走进去却是一生的功课</div></div></div>
+        <div class="meta"><span class="tag">A · strict</span><h2>严格单行</h2><p>每条控制在约 12～14 个中文字，绝不换行；字幕切换会更频繁。</p></div>
+      </article>
+      <article class="option" data-choice="balanced-recommended" onclick="toggleSelect(this)">
+        <div class="preview"><div class="shade"></div><div class="caption-stack"><div class="caption">婚姻二字 写起来只有两笔</div><div class="caption">走进去却是一生的功课</div></div></div>
+        <div class="meta"><span class="tag">B · recommended</span><h2>平衡单行</h2><p>单行上限约 14～16 个字；去掉标点；末尾少于 3～5 个字时并回上一条。</p></div>
+      </article>
+      <article class="option" data-choice="punctuation-first" onclick="toggleSelect(this)">
+        <div class="preview"><div class="shade"></div><div class="caption-stack"><div class="caption old">婚姻二字写起来只有两笔，走进去却是一生</div><div class="caption muted">的功课。</div></div></div>
+        <div class="meta"><span class="tag">C · current</span><h2>当前规则</h2><p>20 字硬上限，遇到句号断句；会保留标点，也可能产生“的功课。”这种短尾。</p></div>
+      </article>
+    </section>
+    <div class="question">建议从 B 开始：兼顾单行可读性、字幕节奏和完整语义。点击方案后，在终端告诉我是否按它实施。</div>
+  </main>
+</body>
+</html>

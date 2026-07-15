@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>点击稳定性复现页</title>
+  <style>
+    body { margin: 0; padding: 48px; background: #202124; color: #f5f5f5; font-family: "Microsoft YaHei", sans-serif; }
+    main { max-width: 640px; margin: 0 auto; }
+    .card { padding: 32px; border: 2px solid #555; border-radius: 16px; background: #2b2c30; cursor: pointer; }
+    .card:hover { border-color: #69a7ff; }
+    .card.selected { border-color: #54d18a; background: #253c31; }
+    h1 { font-size: 24px; }
+    p { color: #c5c6c8; line-height: 1.7; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>点击稳定性复现</h1>
+    <p>这是极简页面，不加载图片、不打开外链、不执行关闭窗口操作。请只点击下面这张卡片一次。</p>
+    <div class="card" data-choice="minimal-click" onclick="toggleSelect(this)">
+      <strong>点击这里测试</strong>
+      <p>点击后只改变绿色边框，并发送一个本地事件。</p>
+    </div>
+  </main>
+</body>
+</html>
