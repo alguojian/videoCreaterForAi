@@ -8,7 +8,7 @@ Windows 原生环境、由结构化 Markdown 口播稿驱动的本地口播视�
 - CosyVoice3 本地语音合成；
 - Qwen3 Forced Aligner 字幕对齐；
 - Pexels / Pixabay / Coverr 在线素材；
-- 横屏 16:9 比例过滤和尽量免裁剪合成；
+- 默认横屏 16:9 输出；Pexels/Pixabay 按目标比例过滤，素材尽量免裁剪适配。
 - 底部单行白字黑描边字幕；
 - 同行多重点词、重点词可跨行重复触发、随机位置/颜色/动画、固定音效库；
 - 格式化 Markdown 已提供搜索词与重点词，视频生成阶段不再调用 LLM。
@@ -19,13 +19,13 @@ Windows 原生环境、由结构化 Markdown 口播稿驱动的本地口播视�
 
 ## Windows 最短启动方式
 
-优先双击 `webui.bat`。
-
-备用命令：
+推荐启动命令：
 
 ```powershell
 .\tools\miniforge3\envs\mpt\python.exe -m streamlit run webui\Main.py
 ```
+
+`webui.bat` 仅作为可选入口，适用于已自行配置好 `.venv`、项目内 Python 或 `uv` 环境时。
 
 ## 文档与示例
 
