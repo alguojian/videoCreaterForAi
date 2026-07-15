@@ -50,10 +50,10 @@ st.set_page_config(
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "About": "# MoneyPrinterTurbo\nUpload a final UTF-8 Markdown voiceover script. "
+        "MoneyPrinterTurbo uses its title, line-by-line narration, emphasis terms, "
+        "and scene search terms to generate a high-definition short video.\n\n"
+        "https://github.com/harry0703/MoneyPrinterTurbo",
     },
 )
 
@@ -76,7 +76,7 @@ locales = utils.load_locales(i18n_dir)
 DEFAULT_CHATTERBOX_BASE_URL = "http://127.0.0.1:4123/v1"
 DEFAULT_CHATTERBOX_MODEL = "chatterbox"
 DEFAULT_CHATTERBOX_VOICES = ["default-Female"]
-ONBOARDING_TOUR_KEY = "mpt-onboarding-v1"
+ONBOARDING_TOUR_KEY = "mpt-onboarding-v2"
 VOICE_MODE_TTS = "tts"
 VOICE_MODE_UPLOAD = "upload"
 VOICE_MODE_NONE = "none"
@@ -1136,6 +1136,21 @@ def _render_top_bar():
                     config.save_config()
                     # 切换语言后强制刷新，避免 selectbox 继续展示旧语言文案。
                     st.rerun()
+
+
+support_locales = [
+    "zh-CN",
+    "zh-HK",
+    "zh-TW",
+    "de-DE",
+    "en-US",
+    "es-ES",
+    "fr-FR",
+    "ru-RU",
+    "vi-VN",
+    "th-TH",
+    "tr-TR",
+]
 
 
 # -----------------------------------------------------------------------------
