@@ -130,13 +130,44 @@ def test_webui_is_markdown_only_without_llm_controls():
 
 def test_generation_controls_require_markdown_document():
     generation_controls = _function_source("_render_generation_controls")
-    generation_disabled_expression = generation_controls[
-        generation_controls.index("generation_disabled =") : generation_controls.index(
-            "start_button = st.button"
+    tree = ast.parse(generation_controls)
+
+    generation_disabled_assign = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "generation_disabled"
+            for target in node.targets
+        )
+    )
+    generation_disabled_value = ast.unparse(generation_disabled_assign.value)
+    assert "not params.markdown_script" in generation_disabled_value
+    assert "markdown_script_error" in generation_disabled_value
+
+    generate_video_button_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "button"
+        and any(
+            keyword.arg == "key"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "generate_video_button"
+            for keyword in node.keywords
         )
     ]
+    assert generate_video_button_calls
 
-    assert "not params.markdown_script" in generation_disabled_expression
-    assert "markdown_script_error" in generation_disabled_expression
-    assert "disabled=generation_disabled" in generation_controls
+    disabled_keyword = next(
+        (
+            keyword
+            for keyword in generate_video_button_calls[0].keywords
+            if keyword.arg == "disabled"
+        ),
+        None,
+    )
+    assert disabled_keyword is not None
+    assert "generation_disabled" in ast.unparse(disabled_keyword.value)
     assert 'tr("Generate Video")' in generation_controls
