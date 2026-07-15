@@ -93,3 +93,37 @@ def test_markdown_preview_dataframe_columns_use_localized_labels():
         "Markdown Scene Search Terms",
     ):
         assert f'tr("{label}"):' in script_settings
+
+
+def test_webui_is_markdown_only_without_llm_controls():
+    source = WEBUI_MAIN.read_text(encoding="utf-8")
+    settings = _function_source("_render_settings_dialog")
+    script_settings = _function_source("_render_script_settings")
+
+    for forbidden in (
+        "LLM Settings Tab",
+        "LLM Provider",
+        "Test LLM Connection",
+        "Generate Video Script and Keywords",
+        "Generate Video Keywords",
+        "Advanced Script Settings",
+        "Video Subject Placeholder",
+        "llm.generate_script",
+        "llm.generate_terms",
+    ):
+        assert forbidden not in source
+        assert forbidden not in settings
+        assert forbidden not in script_settings
+
+    assert 'tr("Import Markdown Script")' in script_settings
+    assert 'tr("Markdown Parse Preview")' in script_settings
+    assert 'tr("Markdown Script Help")' in script_settings
+    assert "apply_to_video_params" in script_settings
+
+
+def test_generation_controls_require_markdown_document():
+    generation_controls = _function_source("_render_generation_controls")
+
+    assert "not params.markdown_script" in generation_controls
+    assert "markdown_script_error" in generation_controls
+    assert 'tr("Generate Video")' in generation_controls
