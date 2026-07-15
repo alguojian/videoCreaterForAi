@@ -185,6 +185,10 @@ def parse_markdown_script(markdown: str) -> MarkdownScriptDocument:
                 raise MarkdownScriptError(
                     f"第 {expected_number} 行重点词“{term}”不在口播文案中"
                 )
+            if len(normalized_term) < 2:
+                raise MarkdownScriptError(
+                    f"第 {expected_number} 行重点词“{term}”至少包含 2 个可见字符"
+                )
 
         search_terms = _split_cell_list(
             search_text,

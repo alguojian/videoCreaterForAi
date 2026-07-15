@@ -123,6 +123,16 @@ def test_visible_text_removes_whitespace_and_unicode_punctuation():
     assert script_document.visible_text(" 婚 姻，二字！Promise's。 ") == "婚姻二字Promises"
 
 
+def test_parse_markdown_rejects_single_visible_emphasis_terms():
+    markdown = VALID_MARKDOWN.replace("婚姻二字；只有两笔", "婚")
+
+    with pytest.raises(
+        script_document.MarkdownScriptError,
+        match="第 1 行重点词.*至少包含 2 个可见字符",
+    ):
+        script_document.parse_markdown_script(markdown)
+
+
 def test_parse_markdown_upload_accepts_case_insensitive_md_extension():
     document = script_document.parse_markdown_upload(
         "marriage.MD",
