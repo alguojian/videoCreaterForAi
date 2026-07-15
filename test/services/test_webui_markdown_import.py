@@ -108,12 +108,18 @@ def test_webui_is_markdown_only_without_llm_controls():
         "Generate Video Keywords",
         "Advanced Script Settings",
         "Video Subject Placeholder",
-        "llm.generate_script",
-        "llm.generate_terms",
     ):
-        assert forbidden not in source
         assert forbidden not in settings
         assert forbidden not in script_settings
+
+    for forbidden in (
+        "llm.generate_script",
+        "llm.generate_terms",
+        "llm.test_connection",
+        "LLM_PROVIDER_REGISTRY",
+        "get_llm_provider",
+    ):
+        assert forbidden not in source
 
     assert 'tr("Import Markdown Script")' in script_settings
     assert 'tr("Markdown Parse Preview")' in script_settings
@@ -123,7 +129,13 @@ def test_webui_is_markdown_only_without_llm_controls():
 
 def test_generation_controls_require_markdown_document():
     generation_controls = _function_source("_render_generation_controls")
+    generation_disabled_expression = generation_controls[
+        generation_controls.index("generation_disabled =") : generation_controls.index(
+            "start_button = st.button"
+        )
+    ]
 
-    assert "not params.markdown_script" in generation_controls
-    assert "markdown_script_error" in generation_controls
+    assert "not params.markdown_script" in generation_disabled_expression
+    assert "markdown_script_error" in generation_disabled_expression
+    assert "disabled=generation_disabled" in generation_controls
     assert 'tr("Generate Video")' in generation_controls
