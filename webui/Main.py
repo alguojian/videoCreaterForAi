@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import requests
 import streamlit as st
 from loguru import logger
 from streamlit_tour import Tour
@@ -25,12 +24,6 @@ if root_dir not in sys.path:
 
 from app.config import config
 from app.models import const
-from app.models.llm_provider import (
-    DEFAULT_LLM_PROVIDER_ID,
-    LLM_PROVIDER_REGISTRY,
-    get_llm_provider,
-    normalize_provider_override,
-)
 from app.models.schema import (
     MaterialInfo,
     VideoAspect,
@@ -41,7 +34,6 @@ from app.models.schema import (
 from app.services import bgm as bgm_service
 from app.services import (
     cache_manager,
-    llm,
     local_voice as local_voice_service,
     script_document,
     video,
@@ -245,8 +237,6 @@ def _initialize_session_state():
         "markdown_script_document": None,
         "markdown_script_error": "",
         "markdown_script_hash": "",
-        "video_script_prompt": "",
-        "custom_system_prompt": llm.DEFAULT_SCRIPT_SYSTEM_PROMPT,
         "match_materials_to_script": bool(
             config.app.get("match_materials_to_script", False)
         ),
@@ -901,7 +891,7 @@ def _apply_pending_task_restore():
     if isinstance(video_terms, list):
         video_terms = ", ".join(str(term) for term in video_terms)
 
-    # 文案与高级脚本设置。
+    # Markdown 文案。
     st.session_state["video_subject"] = params.get("video_subject") or ""
     st.session_state["video_script"] = params.get("video_script") or ""
     st.session_state["video_terms"] = str(video_terms)
@@ -911,15 +901,6 @@ def _apply_pending_task_restore():
     # 任务历史只恢复序列化文档，不回填浏览器上传控件；清掉旧控件值，避免
     # 上一次上传的文件在本轮 rerun 中覆盖刚恢复的文档。
     st.session_state.pop("markdown_script_uploader", None)
-    _set_stable_widget_value(
-        "script_language_select", params.get("video_language") or ""
-    )
-    st.session_state["paragraph_number_input"] = params.get("paragraph_number", 1)
-    st.session_state["video_script_prompt"] = params.get("video_script_prompt") or ""
-    st.session_state["custom_system_prompt"] = (
-        params.get("custom_system_prompt") or llm.DEFAULT_SCRIPT_SYSTEM_PROMPT
-    )
-
     # 视频设置。素材上传控件不能由服务端写入，因此本地素材需要用户重新选择。
     video_source = params.get("video_source") or "pexels"
     _set_stable_widget_value("video_source_select", video_source)
@@ -1157,21 +1138,6 @@ def _render_top_bar():
                     st.rerun()
 
 
-support_locales = [
-    "zh-CN",
-    "zh-HK",
-    "zh-TW",
-    "de-DE",
-    "en-US",
-    "es-ES",
-    "fr-FR",
-    "ru-RU",
-    "vi-VN",
-    "th-TH",
-    "tr-TR",
-]
-
-
 # -----------------------------------------------------------------------------
 # 通用 UI 组件、资源缓存与日志
 # -----------------------------------------------------------------------------
@@ -1259,30 +1225,20 @@ def init_log():
 init_log()
 
 
-def tr_optional(key, fallback_language=""):
-    loc = locales.get(st.session_state["ui_language"], {})
-    value = loc.get("Translation", {}).get(key, "")
-    if not value and fallback_language:
-        fallback_loc = locales.get(fallback_language, {})
-        value = fallback_loc.get("Translation", {}).get(key, "")
-    return value if value else ""
-
-
 def render_onboarding_tour():
-    # 引导只覆盖三个稳定入口，不尝试控制 Dialog、Tabs 或业务表单。这样既能让
-    # 新用户理解完整流程，也不会把引导状态与 Streamlit 的动态组件生命周期耦合。
+    # 引导只覆盖主设置区、视频设置和生成入口，不尝试控制 Dialog 或 Tabs。
     steps = [
         Tour.bind(
-            "open_settings_dialog_button",
-            title=tr("Onboarding Model Settings Title"),
-            desc=tr("Onboarding Model Settings Description"),
-            side="bottom",
-            align="end",
+            "main_settings_grid",
+            title=tr("Import Markdown Script"),
+            desc=tr("Markdown Script Help"),
+            side="top",
+            align="center",
         ),
         Tour.bind(
-            "main_settings_grid",
-            title=tr("Onboarding Creation Settings Title"),
-            desc=tr("Onboarding Creation Settings Description"),
+            "video_settings",
+            title=tr("Video Settings"),
+            desc=tr("Video Source"),
             side="top",
             align="center",
         ),
@@ -1352,48 +1308,8 @@ def remove_logger_handler_safely(handler_id):
         logger.debug(f"log handler already removed: {handler_id}")
 
 
-def get_llm_provider_tips(provider_id, **kwargs):
-    # LLM provider 说明文案统一使用 `llm_provider_tips.<provider_id>` 规则。
-    # 这样新增 provider 时只需要在 locale 中补文案；没有文案时不展示提示块，
-    # 避免 Main.py 里继续堆叠大量中英文硬编码说明。
-    provider = get_llm_provider(provider_id)
-    if provider is None:
-        return ""
-
-    # Provider 配置说明目前统一维护中文和英文两套规范模板；其它界面语言
-    # 统一使用英文，避免在 locale 中复制英文后长期不同步。后续某个语种完成
-    # 全量翻译后，再将它加入这里的独立维护范围。
-    ui_language = st.session_state.get("ui_language", "en")
-    tips_language = ui_language if ui_language in {"zh", "en"} else "en"
-    tips = (
-        locales.get(tips_language, {}).get("Translation", {}).get(provider.tips_key, "")
-    )
-    if not tips:
-        return tips
-
-    format_context = {
-        "api_key_url": provider.api_key_url,
-        "default_model": provider.default_model,
-        "default_base_url": provider.default_base_url,
-        **{
-            f"default_{field.config_suffix}": field.default_value
-            for field in provider.extra_fields
-        },
-        **kwargs,
-    }
-    try:
-        return tips.format(**format_context)
-    except Exception as e:
-        logger.warning(f"format llm provider tips failed: {provider_id}, {e}")
-        return tips
-
-
-def get_llm_provider_label(provider):
-    return tr_optional(provider.label_key) or provider.default_label
-
-
 def get_tts_provider_tips(provider_id):
-    # TTS 配置说明与 LLM Provider 采用相同维护策略：只维护中英文，
+    # TTS 配置说明只维护中英文，
     # 其它界面语言统一回退英文，避免复制后长期不同步。
     ui_language = st.session_state.get("ui_language", "en")
     tips_language = ui_language if ui_language in {"zh", "en"} else "en"
@@ -1467,11 +1383,6 @@ def sync_script_order_concat_mode():
         st.session_state[widget_key] = previous_mode
 
 
-def reset_script_system_prompt():
-    """将高级脚本设置中的系统提示词恢复为当前版本的默认内容。"""
-    st.session_state["custom_system_prompt"] = llm.DEFAULT_SCRIPT_SYSTEM_PROMPT
-
-
 def reset_subtitle_settings():
     """恢复 WebUI 字幕控件和持久化配置中的默认值。"""
     defaults = DEFAULT_SUBTITLE_SETTINGS
@@ -1507,12 +1418,6 @@ def reset_subtitle_settings():
         config.ui[key] = defaults[key]
 
 
-@st.dialog(tr("Final Prompt Preview"), width="large")
-def render_script_prompt_preview(prompt):
-    """展示将要发送给大模型的完整脚本生成提示词。"""
-    st.code(prompt, language="markdown", wrap_lines=True)
-
-
 def stable_segmented_control(
     label, options, default_value, key, format_func=None, **kwargs
 ):
@@ -1537,39 +1442,6 @@ def stable_segmented_control(
         key=widget_key,
         **kwargs,
     )
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_groq_model_ids(api_key: str, base_url: str) -> list[str]:
-    if not api_key:
-        return []
-
-    normalized_base_url = (
-        (base_url or "https://api.groq.com/openai/v1").strip().rstrip("/")
-    )
-    models_url = f"{normalized_base_url}/models"
-
-    try:
-        response = requests.get(
-            models_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", [])
-
-        model_ids = []
-        for item in data:
-            if isinstance(item, dict):
-                model_id = item.get("id")
-                if isinstance(model_id, str) and model_id.strip():
-                    model_ids.append(model_id.strip())
-
-        return sorted(set(model_ids))
-    except Exception as e:
-        logger.warning(f"failed to fetch groq models: {e}")
-        return []
 
 
 def _get_material_api_keys(config_key):
@@ -1712,14 +1584,14 @@ def _render_cache_management_settings(panel):
 
 
 # -----------------------------------------------------------------------------
-# 设置与提示词弹窗
+# 设置弹窗
 # -----------------------------------------------------------------------------
 
 
 # 设置属于低频操作，使用中等尺寸 Dialog 避免长期占用主页面纵向空间，
 # 同时控制阅读行宽，避免弹窗在宽屏设备上显得过于松散。
 # Dialog 继承 fragment 行为，内部控件交互只重绘弹窗；函数末尾单独保存配置，
-# 关闭时通过回调触发整页同步，确保生成流程读取最新 Provider 和界面设置。
+# 关闭时通过回调触发整页同步，确保生成流程读取最新界面设置。
 @st.dialog(
     tr("Settings"),
     width="medium",
@@ -1727,215 +1599,16 @@ def _render_cache_management_settings(panel):
 )
 def _render_settings_dialog():
     with st.container():
-        # 历史 hide_config 只用于隐藏旧基础设置面板。改为固定设置入口后，该值
-        # 不再有用户可见意义，统一迁移为 false，避免旧配置影响后续版本。
         config.app["hide_config"] = False
-        (
-            middle_config_panel,
-            right_config_panel,
-            cache_config_panel,
-            left_config_panel,
-        ) = st.tabs(
+        material_config_panel, cache_config_panel, interface_config_panel = st.tabs(
             [
-                tr("LLM Settings Tab"),
                 tr("Material API Tab"),
                 tr("Cache Management Tab"),
                 tr("Interface Settings Tab"),
             ]
         )
 
-        # 左侧面板 - 日志设置
-        with left_config_panel:
-            hide_log = st.checkbox(
-                tr("Hide Log"),
-                value=config.ui.get("hide_log", False),
-                key="hide_log_checkbox",
-            )
-            config.ui["hide_log"] = hide_log
-
-        _render_cache_management_settings(cache_config_panel)
-
-        # 中间面板 - LLM 设置
-
-        with middle_config_panel:
-            # 下拉顺序、默认 label 和稳定 provider id 全部来自 Registry；locale
-            # 只覆盖展示文案，不再让 Main.py 维护第二份 Provider 列表。
-            llm_provider_ids = [
-                provider.provider_id for provider in LLM_PROVIDER_REGISTRY
-            ]
-            llm_provider_labels = {
-                provider.provider_id: get_llm_provider_label(provider)
-                for provider in LLM_PROVIDER_REGISTRY
-            }
-            saved_llm_provider = config.app.get(
-                "llm_provider", DEFAULT_LLM_PROVIDER_ID
-            ).lower()
-            if saved_llm_provider not in llm_provider_ids:
-                saved_llm_provider = DEFAULT_LLM_PROVIDER_ID
-
-            llm_provider = stable_selectbox(
-                tr("LLM Provider"),
-                options=llm_provider_ids,
-                default_value=saved_llm_provider,
-                key="llm_provider_select",
-                format_func=lambda provider_id: llm_provider_labels[provider_id],
-            )
-            # 配置表单和 Provider 说明并排展示，减少长说明在窄列中的换行，
-            # 同时充分利用基础设置面板的横向空间。
-            llm_form_panel, llm_help_panel = st.columns(
-                [0.9, 1.1],
-                gap="large",
-                vertical_alignment="top",
-            )
-            llm_helper = llm_help_panel.container()
-            config.app["llm_provider"] = llm_provider
-            llm_provider_spec = get_llm_provider(llm_provider)
-            if llm_provider_spec is None:
-                # 正常情况下下拉选项全部来自 Registry，不会进入该分支；保留
-                # 明确错误用于诊断损坏的 session state 或后续接入遗漏。
-                raise RuntimeError(f"unsupported llm provider: {llm_provider}")
-
-            llm_api_key = config.app.get(llm_provider_spec.config_key("api_key"), "")
-            llm_base_url = (
-                config.app.get(llm_provider_spec.config_key("base_url"), "")
-                or llm_provider_spec.default_base_url
-            )
-            llm_default_base_url = llm_provider_spec.default_base_url
-            llm_model_name = llm_provider_spec.resolve_model_name(
-                config.app.get(llm_provider_spec.config_key("model_name"), "")
-            )
-
-            provider_tip_context = {}
-            if llm_provider == "ollama":
-                llm_default_base_url = config.get_default_ollama_base_url()
-                if not llm_base_url:
-                    llm_base_url = llm_default_base_url
-                docker_hint = ""
-                if config.is_running_in_container():
-                    docker_hint = tr_optional(
-                        "llm_provider_tips.ollama.docker_hint",
-                        fallback_language="en",
-                    )
-                provider_tip_context["docker_hint"] = docker_hint
-
-            tips = get_llm_provider_tips(llm_provider, **provider_tip_context)
-            if tips:
-                with llm_helper:
-                    st.info(tips)
-
-            st_llm_api_key = llm_api_key
-            if llm_provider_spec.show_api_key:
-                st_llm_api_key = llm_form_panel.text_input(
-                    tr("API Key"),
-                    value=llm_api_key,
-                    type="password",
-                    key=f"{llm_provider}_api_key_input",
-                )
-
-            st_llm_base_url = llm_base_url
-            if llm_provider_spec.show_base_url:
-                st_llm_base_url = llm_form_panel.text_input(
-                    tr("Base Url"),
-                    value=llm_base_url,
-                    key=f"{llm_provider}_base_url_input",
-                )
-            st_llm_model_name = ""
-            if llm_provider == "groq":
-                effective_api_key = st_llm_api_key or llm_api_key
-                effective_base_url = st_llm_base_url or llm_base_url
-                groq_models = get_groq_model_ids(
-                    api_key=effective_api_key,
-                    base_url=effective_base_url,
-                )
-
-                if groq_models:
-                    selected_index = 0
-                    if llm_model_name in groq_models:
-                        selected_index = groq_models.index(llm_model_name)
-
-                    st_llm_model_name = llm_form_panel.selectbox(
-                        tr("Model Name"),
-                        options=groq_models,
-                        index=selected_index,
-                        key="groq_model_name_select",
-                    )
-                else:
-                    st_llm_model_name = llm_form_panel.text_input(
-                        tr("Model Name"),
-                        value=llm_model_name,
-                        key="groq_model_name_input",
-                    )
-                    if effective_api_key:
-                        llm_form_panel.caption(tr("Groq Model List Load Failed"))
-                    else:
-                        llm_form_panel.caption(
-                            tr("Groq API Key Required for Model List")
-                        )
-            else:
-                st_llm_model_name = llm_form_panel.text_input(
-                    tr("Model Name"),
-                    value=llm_model_name,
-                    key=f"{llm_provider}_model_name_input",
-                )
-            # 输入框展示 Registry 默认值，但配置只保存真实的用户覆盖值。
-            # 这样默认模型、Base URL 更新后，未自定义的用户能够自动跟随。
-            config.app[llm_provider_spec.config_key("api_key")] = st_llm_api_key
-            config.app[llm_provider_spec.config_key("base_url")] = (
-                normalize_provider_override(
-                    st_llm_base_url,
-                    llm_default_base_url,
-                )
-            )
-            config.app[llm_provider_spec.config_key("model_name")] = (
-                normalize_provider_override(
-                    st_llm_model_name,
-                    llm_provider_spec.default_model,
-                )
-            )
-
-            # Provider 专用字段也由 Registry 声明。例如 Cloudflare AI Gateway
-            # 需要 Account ID；以后新增类似字段时无需再在 Main.py 增加判断。
-            for field in llm_provider_spec.extra_fields:
-                field_config_key = llm_provider_spec.config_key(field.config_suffix)
-                field_value = llm_form_panel.text_input(
-                    tr(field.label_key),
-                    value=(config.app.get(field_config_key, "") or field.default_value),
-                    type="password" if field.secret else "default",
-                    key=f"{llm_provider}_{field.config_suffix}_input",
-                )
-                config.app[field_config_key] = normalize_provider_override(
-                    field_value,
-                    field.default_value,
-                )
-
-            if llm_form_panel.button(
-                tr("Test LLM Connection"),
-                key="test_llm_connection_button",
-                use_container_width=True,
-                type="secondary",
-                icon=":material/network_check:",
-            ):
-                with llm_form_panel.spinner(tr("Testing LLM Connection")):
-                    with config.runtime_config_lock():
-                        connection_ok, connection_error, connection_elapsed = (
-                            llm.test_connection()
-                        )
-
-                if connection_ok:
-                    llm_form_panel.success(
-                        tr("LLM Connection Test Succeeded").format(
-                            provider=llm_provider_labels[llm_provider],
-                            model=st_llm_model_name or "-",
-                            elapsed=f"{connection_elapsed:.2f}",
-                        )
-                    )
-                else:
-                    llm_form_panel.error(
-                        tr("LLM Connection Test Failed").format(error=connection_error)
-                    )
-
-        # 右侧面板 - API 密钥设置
-        with right_config_panel:
+        with material_config_panel:
             pexels_api_key = _get_material_api_keys("pexels_api_keys")
             pexels_api_key = st.text_input(
                 tr("Pexels API Key"),
@@ -1963,6 +1636,16 @@ def _render_settings_dialog():
             )
             _save_material_api_keys("coverr_api_keys", coverr_api_key)
 
+        _render_cache_management_settings(cache_config_panel)
+
+        with interface_config_panel:
+            hide_log = st.checkbox(
+                tr("Hide Log"),
+                value=config.ui.get("hide_log", False),
+                key="hide_log_checkbox",
+            )
+            config.ui["hide_log"] = hide_log
+
     config.save_config()
 
 
@@ -1977,11 +1660,15 @@ def _render_script_settings(panel, params):
         with st.container(border=True):
             st.write(tr("Video Script Settings"))
 
+            markdown_import_active = bool(
+                st.session_state.get("markdown_script_document")
+            )
             uploaded_markdown = st.file_uploader(
                 tr("Import Markdown Script"),
                 type=["md"],
                 help=tr("Markdown Script Help"),
                 key="markdown_script_uploader",
+                disabled=markdown_import_active,
             )
             if uploaded_markdown is not None:
                 markdown_payload = uploaded_markdown.getvalue()
@@ -2062,182 +1749,19 @@ def _render_script_settings(panel, params):
                     on_click=_clear_markdown_import_state,
                     use_container_width=True,
                 )
-
-            subject_value = st.text_input(
-                tr("Video Subject"),
-                placeholder=tr("Video Subject Placeholder"),
-                key="video_subject",
-                disabled=markdown_import_active,
-            ).strip()
-            if not markdown_import_active:
-                params.video_subject = subject_value
-
-            video_languages = [
-                (tr("Auto Detect"), ""),
-            ]
-            for code in support_locales:
-                video_languages.append((code, code))
-
-            selected_language_code = stable_selectbox(
-                tr("Script Language"),
-                options=[value for _, value in video_languages],
-                default_value="",
-                key="script_language_select",
-                format_func=lambda value: dict(
-                    (v, label) for label, v in video_languages
-                )[value],
-            )
-            params.video_language = selected_language_code
-
-            # 使用带 key 的局部容器限定折叠入口样式，保持 expander 的原生交互，
-            # 同时避免样式误伤页面顶部的“基础设置”等其他折叠区域。
-            with st.container(key="advanced_settings_script"):
-                with st.expander(tr("Advanced Script Settings"), expanded=False):
-                    st.session_state.setdefault("paragraph_number_input", 1)
-                    params.paragraph_number = st.slider(
-                        tr("Script Paragraph Number"),
-                        min_value=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
-                        max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
-                        key="paragraph_number_input",
-                    )
-                    params.video_script_prompt = st.text_area(
-                        tr("Custom Script Requirements"),
-                        height=100,
-                        max_chars=llm.MAX_SCRIPT_PROMPT_LENGTH,
-                        placeholder=tr("Custom Script Requirements Placeholder"),
-                        key="video_script_prompt",
-                        disabled=markdown_import_active,
-                    ).strip()
-
-                    system_prompt = st.text_area(
-                        tr("Custom System Prompt"),
-                        height=240,
-                        max_chars=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
-                        key="custom_system_prompt",
-                        disabled=markdown_import_active,
-                    ).strip()
-                    # 默认内容由服务层统一维护。界面虽然直接展示默认提示词，但只有
-                    # 用户实际修改后才随任务传递，避免历史任务固化旧版本默认规则。
-                    params.custom_system_prompt = (
-                        ""
-                        if system_prompt == llm.DEFAULT_SCRIPT_SYSTEM_PROMPT.strip()
-                        else system_prompt
-                    )
-
-                    restore_prompt_col, preview_prompt_col = st.columns(2)
-                    if restore_prompt_col.button(
-                        tr("Restore Default System Prompt"),
-                        key="restore_default_system_prompt",
-                        icon=":material/restart_alt:",
-                        on_click=reset_script_system_prompt,
-                        use_container_width=True,
-                        disabled=markdown_import_active,
-                    ):
-                        st.toast(tr("Default System Prompt Restored"))
-                    if preview_prompt_col.button(
-                        tr("Preview Final Prompt"),
-                        key="preview_final_script_prompt",
-                        icon=":material/preview:",
-                        use_container_width=True,
-                        disabled=markdown_import_active,
-                    ):
-                        render_script_prompt_preview(
-                            llm.build_script_prompt(
-                                video_subject=params.video_subject,
-                                language=params.video_language,
-                                paragraph_number=params.paragraph_number,
-                                video_script_prompt=params.video_script_prompt,
-                                custom_system_prompt=params.custom_system_prompt,
-                            )
-                        )
-
-            if st.button(
-                tr("Generate Video Script and Keywords"),
-                key="auto_generate_script",
-                use_container_width=True,
-                type="secondary",
-                icon=":material/auto_awesome:",
-                disabled=markdown_import_active,
+            if (
+                uploaded_markdown is None
+                and not markdown_import_active
+                and not markdown_error
             ):
-                if not params.video_subject:
-                    # 视频主题是脚本生成的必要输入，提前拦截可以避免无意义的模型调用。
-                    st.toast(tr("Please Enter the Video Subject First"))
-                    st.warning(tr("Please Enter the Video Subject First"))
-                else:
-                    with st.spinner(tr("Generating Video Script and Keywords")):
-                        with config.runtime_config_lock():
-                            script = llm.generate_script(
-                                video_subject=params.video_subject,
-                                language=params.video_language,
-                                paragraph_number=params.paragraph_number,
-                                video_script_prompt=params.video_script_prompt,
-                                custom_system_prompt=params.custom_system_prompt,
-                            )
-                            terms = llm.generate_terms(
-                                params.video_subject,
-                                script,
-                                amount=8 if params.match_materials_to_script else 5,
-                                match_script_order=params.match_materials_to_script,
-                            )
-                        if "Error: " in script:
-                            st.error(tr(script))
-                        elif "Error: " in terms:
-                            st.error(tr(terms))
-                        else:
-                            st.session_state["video_script"] = script
-                            st.session_state["video_terms"] = ", ".join(terms)
-            script_value = st.text_area(
-                tr("Video Script"),
-                help=tr("Video Script Help"),
-                height=180,
-                key="video_script",
-                disabled=markdown_import_active,
-            )
-            if not markdown_import_active:
-                params.video_script = script_value
-            if st.button(
-                tr("Generate Video Keywords"),
-                key="auto_generate_terms",
-                use_container_width=True,
-                type="secondary",
-                icon=":material/auto_awesome:",
-                disabled=markdown_import_active,
-            ):
-                if not params.video_script:
-                    # 视频关键词需要基于文案提取，文案为空时提前提示并跳过模型调用。
-                    st.toast(tr("Please Enter the Video Subject"))
-                    st.warning(tr("Please Enter the Video Subject"))
-                else:
-                    with st.spinner(tr("Generating Video Keywords")):
-                        with config.runtime_config_lock():
-                            terms = llm.generate_terms(
-                                params.video_subject,
-                                params.video_script,
-                                amount=8 if params.match_materials_to_script else 5,
-                                match_script_order=params.match_materials_to_script,
-                            )
-                        if "Error: " in terms:
-                            st.error(tr(terms))
-                        else:
-                            st.session_state["video_terms"] = ", ".join(terms)
-
-            terms_value = st.text_area(
-                tr("Video Keywords"),
-                help=tr("Video Keywords Help"),
-                key="video_terms",
-                disabled=markdown_import_active,
-            )
-            if markdown_import_active:
-                script_document.apply_to_video_params(markdown_document, params)
-            else:
-                params.video_terms = terms_value
+                st.info(tr("Markdown Script Help"))
 
 
 def _render_video_settings(panel, params):
     """渲染视频设置并返回本次选择的本地素材。"""
     uploaded_files = []
     with panel:
-        with st.container(border=True):
+        with st.container(border=True, key="video_settings"):
             st.write(tr("Video Settings"))
             video_concat_modes = [
                 (tr("Sequential"), "sequential"),
@@ -2878,8 +2402,8 @@ def _render_audio_settings(panel, params):
                 config.azure["speech_key"] = azure_speech_key
 
             if tts_mode_enabled and selected_tts_server == "gemini-tts":
-                # Gemini TTS 与 Gemini LLM 共用同一份密钥；在音频面板提供直接入口，
-                # 用户无需先切换 LLM Provider 才能完成语音配置。
+                # Gemini TTS 与 Gemini 模型服务共用同一份密钥；在音频面板提供直接
+                # 入口，用户无需离开当前面板即可完成语音配置。
                 gemini_tts_api_key = st.text_input(
                     f"Google Gemini {tr('API Key')}",
                     value=config.app.get("gemini_api_key", ""),
@@ -2904,7 +2428,7 @@ def _render_audio_settings(panel, params):
 
                 config.siliconflow["api_key"] = siliconflow_api_key
 
-            # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
+            # 当选择 Xiaomi MiMo TTS 时，复用 MiMo 模型服务的 API Key。
             # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
             if tts_mode_enabled and (
                 selected_tts_server == "mimo-tts"
@@ -3405,9 +2929,11 @@ def _render_generation_controls(
     )
     if markdown_source_invalid:
         st.error(tr("Markdown Requires Online Material Source"))
-    generation_disabled = bool(
-        st.session_state.get("markdown_script_error")
-    ) or markdown_source_invalid
+    generation_disabled = (
+        not params.markdown_script
+        or bool(st.session_state.get("markdown_script_error"))
+        or markdown_source_invalid
+    )
 
     start_button = st.button(
         tr("Generate Video"),
