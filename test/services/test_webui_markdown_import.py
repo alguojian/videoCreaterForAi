@@ -109,6 +109,7 @@ def test_webui_is_markdown_only_without_llm_controls():
         "Advanced Script Settings",
         "Video Subject Placeholder",
     ):
+        assert forbidden not in source
         assert forbidden not in settings
         assert forbidden not in script_settings
 
