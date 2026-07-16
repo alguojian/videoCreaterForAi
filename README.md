@@ -19,15 +19,20 @@ Windows 原生环境、由结构化 Markdown 口播稿驱动的本地口播视�
 
 ## Windows 最短启动方式
 
-推荐启动命令：
+首次使用先安装主环境：
 
 ```powershell
-.\tools\miniforge3\envs\mpt\python.exe -m streamlit run webui\Main.py
+uv sync --frozen
 ```
 
-`webui.bat` 仅作为可选入口，适用于已自行配置好 `.venv`、项目内 Python 或 `uv` 环境时。
+```powershell
+.\webui.bat
+```
+
+如果不使用 `uv`，可以先创建 `.venv` 并安装 `requirements.txt`，再运行 `webui.bat`。完整配置过程见 [Windows 原生实施与配置手册](docs/windows-setup-guide.md)。
 
 ## 文档与示例
 
+- [Windows 原生实施与配置手册](docs/windows-setup-guide.md)
 - [Markdown 口播稿格式说明](docs/markdown-script-format.md)
 - [Markdown 口播稿示例](examples/markdown-scripts/marriage.md)

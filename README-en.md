@@ -20,15 +20,22 @@ Prepare Markdown -> upload and preview it in WebUI -> generate voiceover and sub
 
 ## Windows startup
 
-Run the following command from the project directory:
+Install the main environment first:
 
 ```powershell
-.\tools\miniforge3\envs\mpt\python.exe -m streamlit run webui\Main.py
+uv sync --frozen
 ```
 
-`webui.bat` is optional and is intended for environments where you have already configured a compatible Python or `uv` runtime.
+Then start the WebUI:
+
+```powershell
+.\webui.bat
+```
+
+If you do not use `uv`, create a `.venv` and install `requirements.txt` first. See the [Windows setup and configuration guide](docs/windows-setup-guide.md) for the complete process.
 
 ## Documentation and example
 
+- [Windows setup and configuration guide](docs/windows-setup-guide.md)
 - [Markdown voiceover script format](docs/markdown-script-format.md)
 - [Markdown script example](examples/markdown-scripts/marriage.md)
