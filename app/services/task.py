@@ -21,6 +21,7 @@ from app.services import (
     voice,
 )
 from app.services import local_voice as local_voice_service
+from app.services.progress import build_task_progress
 from app.services import state as sm
 from app.utils import file_security, utils
 
@@ -30,6 +31,17 @@ class _MarkdownManifestWriteError(RuntimeError):
         self.filename = path.basename(filename)
         self.error_type = type(error).__name__
         super().__init__(self.filename, self.error_type)
+
+
+def _update_task_progress(task_id, stage: str, stage_progress, detail: str = ""):
+    progress = build_task_progress(stage, stage_progress, detail)
+    sm.state.update_task(
+        task_id,
+        progress=progress.overall,
+        stage=progress.stage,
+        stage_progress=progress.stage_progress,
+        detail=progress.detail,
+    )
 
 
 def _log_markdown_artifact_write_error(
@@ -228,6 +240,7 @@ def generate_audio(task_id, params, video_script):
     if not custom_audio_file:
         if _uses_local_voice(params):
             logger.info("using local CosyVoice3 for audio generation")
+            _update_task_progress(task_id, "audio", 0, "CosyVoice3 准备中")
             if not config.local_voice.get("enabled", False):
                 sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
                 logger.error(
@@ -235,11 +248,16 @@ def generate_audio(task_id, params, video_script):
                 )
                 return None, None, None
             try:
+                def report_audio_progress(stage, completed, total, detail):
+                    stage_progress = 100 if total <= 0 else completed / total * 100
+                    _update_task_progress(task_id, "audio", stage_progress, detail)
+
                 result = _get_local_voice_service().synthesize(
                     task_id,
                     utils.task_dir(task_id),
                     video_script,
                     getattr(params, "voice_name", ""),
+                    progress_callback=report_audio_progress,
                 )
             except local_voice_service.LocalVoiceError as exc:
                 sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -248,6 +266,7 @@ def generate_audio(task_id, params, video_script):
             return str(result.audio_file), math.ceil(result.duration), None
 
         logger.info("no custom audio file provided, using TTS to generate audio.")
+        _update_task_progress(task_id, "audio", 0, "云端或系统 TTS 准备中")
         audio_file = path.join(utils.task_dir(task_id), "audio.mp3")
         sub_maker = voice.tts(
             text=video_script,
@@ -272,6 +291,7 @@ def generate_audio(task_id, params, video_script):
         return audio_file, audio_duration, sub_maker
     else:
         logger.info(f"using custom audio file: {custom_audio_file}")
+        _update_task_progress(task_id, "audio", 100, "使用上传音频")
         audio_duration = voice.get_audio_duration(custom_audio_file)
         if audio_duration == 0:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -289,6 +309,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     '''
     logger.info("\n\n## generating subtitle")
     if not params.subtitle_enabled:
+        _update_task_progress(task_id, "subtitle", 100, "字幕已关闭")
         return ""
 
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
@@ -302,6 +323,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
             language = _local_alignment_language(
                 getattr(params, "video_language", "")
             )
+            _update_task_progress(task_id, "subtitle", 0, "Qwen 字幕对齐中")
             try:
                 generated = local_voice_service.LocalVoiceService(settings).align_subtitle(
                     task_id,
@@ -321,16 +343,19 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
                 if not subtitle_lines:
                     logger.warning(f"fallback subtitle file is invalid: {subtitle_path}")
                     return ""
+                _update_task_progress(task_id, "subtitle", 100, "Whisper 字幕已完成")
                 return subtitle_path
             else:
                 subtitle_lines = subtitle.file_to_subtitles(str(generated))
                 if not subtitle_lines:
                     logger.warning(f"subtitle file is invalid: {generated}")
                     return ""
+                _update_task_progress(task_id, "subtitle", 100, "Qwen 字幕对齐完成")
                 return str(generated)
 
     subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
     logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
+    _update_task_progress(task_id, "subtitle", 0, f"{subtitle_provider} 字幕生成中")
 
     if sub_maker is None and subtitle_provider != "whisper":
         # 自定义音频不会经过 TTS，因此没有 Edge/Azure 等 TTS 返回的
@@ -361,6 +386,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
         logger.warning(f"subtitle file is invalid: {subtitle_path}")
         return ""
 
+    _update_task_progress(task_id, "subtitle", 100, "字幕生成完成")
     return subtitle_path
 
 
@@ -525,7 +551,18 @@ def generate_final_videos(
             utils.task_dir(task_id), f"combined-{index}.mp4"
         )
         logger.info(f"\n\n## combining video: {index} => {combined_video_path}")
+        _update_task_progress(
+            task_id,
+            "scenes",
+            i / params.video_count * 100,
+            f"准备拼接第 {index}/{params.video_count} 个视频",
+        )
         if scene_materials is not None:
+            def report_scene_progress(completed, total, detail):
+                local_progress = (completed / total * 100) if total else 100
+                video_progress = (i + local_progress / 100) / params.video_count * 100
+                _update_task_progress(task_id, "scenes", video_progress, detail)
+
             video.combine_scene_videos(
                 combined_video_path=combined_video_path,
                 scene_plans=scene_materials,
@@ -534,8 +571,13 @@ def generate_final_videos(
                 max_clip_duration=params.video_clip_duration,
                 threads=params.n_threads,
                 clip_speed=params.video_clip_speed,
+                progress_callback=report_scene_progress,
             )
         else:
+            def report_clip_progress(completed, detail):
+                video_progress = (i + completed / 100) / params.video_count * 100
+                _update_task_progress(task_id, "scenes", video_progress, detail)
+
             video.combine_videos(
                 combined_video_path=combined_video_path,
                 video_paths=downloaded_videos,
@@ -546,14 +588,24 @@ def generate_final_videos(
                 max_clip_duration=params.video_clip_duration,
                 threads=params.n_threads,
                 clip_speed=params.video_clip_speed,
+                progress_callback=report_clip_progress,
             )
 
         _progress += 50 / params.video_count / 2
-        sm.state.update_task(task_id, progress=_progress)
+        _update_task_progress(
+            task_id,
+            "scenes",
+            (i + 1) / params.video_count * 100,
+            f"第 {index}/{params.video_count} 个视频拼接完成",
+        )
 
         final_video_path = path.join(utils.task_dir(task_id), f"final-{index}.mp4")
 
         logger.info(f"\n\n## generating video: {index} => {final_video_path}")
+        def report_encode_progress(completed, detail):
+            video_progress = (i + completed / 100) / params.video_count * 100
+            _update_task_progress(task_id, "encoding", video_progress, detail)
+
         video.generate_video(
             video_path=combined_video_path,
             audio_path=audio_file,
@@ -561,10 +613,16 @@ def generate_final_videos(
             output_file=final_video_path,
             params=params,
             emphasis_path=emphasis_path,
+            progress_callback=report_encode_progress,
         )
 
         _progress += 50 / params.video_count / 2
-        sm.state.update_task(task_id, progress=_progress)
+        _update_task_progress(
+            task_id,
+            "encoding",
+            (i + 1) / params.video_count * 100,
+            f"第 {index}/{params.video_count} 个视频编码完成",
+        )
 
         final_video_paths.append(final_video_path)
         combined_video_paths.append(combined_video_path)
@@ -574,7 +632,14 @@ def generate_final_videos(
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
+    sm.state.update_task(
+        task_id,
+        state=const.TASK_STATE_PROCESSING,
+        progress=5,
+        stage="script",
+        stage_progress=50,
+        detail="准备视频文案",
+    )
 
     markdown_document = params.markdown_script
     markdown_scenes = []
@@ -746,7 +811,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
             task_id, params, video_script, subtitle_path
         )
 
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
+    _update_task_progress(task_id, "materials", 0, "准备下载视频素材")
 
     # 5. Get video materials
     scene_materials = None
@@ -794,6 +859,13 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
         return
 
+    _update_task_progress(
+        task_id,
+        "materials",
+        100,
+        f"素材准备完成，共 {len(downloaded_videos)} 个文件",
+    )
+
     if stop_at == "materials":
         sm.state.update_task(
             task_id,
@@ -803,7 +875,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         )
         return {"materials": downloaded_videos}
 
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=50)
+    _update_task_progress(task_id, "scenes", 0, "准备拼接视频素材")
 
     # 仅完整视频生成流程才需要处理视频拼接模式；
     # 这样可以避免 /subtitle 和 /audio 这类请求访问不存在的字段。
@@ -892,7 +964,13 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         "cross_post_results": cross_post_results if cross_post_results else None,
     }
     sm.state.update_task(
-        task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs
+        task_id,
+        state=const.TASK_STATE_COMPLETE,
+        progress=100,
+        stage="complete",
+        stage_progress=100,
+        detail="视频生成完成",
+        **kwargs,
     )
     return kwargs
 

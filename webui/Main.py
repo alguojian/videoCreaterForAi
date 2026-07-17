@@ -39,6 +39,11 @@ from app.services import (
     video,
     voice,
 )
+from app.services.local_voice.ui_policy import (
+    LOCAL_TTS_SERVER,
+    automatic_tts_server_options,
+    normalize_tts_server,
+)
 from app.services import state as sm
 from app.services import task as tm
 from app.utils import utils
@@ -81,7 +86,7 @@ VOICE_MODE_TTS = "tts"
 VOICE_MODE_UPLOAD = "upload"
 VOICE_MODE_NONE = "none"
 # “默认”是 WebUI 专用哨兵，不会写入 config.toml，也不会传给 FFmpeg。
-# 后端在 video_codec 未配置时继续采用稳定的 libx264；单独保留该哨兵可以区分
+# 后端在 video_codec 未配置时自动优先尝试硬件编码；单独保留该哨兵可以区分
 # “跟随项目默认策略”和“用户明确固定 libx264”，便于未来安全调整默认策略。
 DEFAULT_VIDEO_CODEC_OPTION = "__default__"
 DEFAULT_SUBTITLE_SETTINGS = {
@@ -533,6 +538,9 @@ def _collect_task_summaries(limit=20):
             "subject": subject,
             "state": task.get("state"),
             "progress": int(task.get("progress", 0) or 0),
+            "stage": task.get("stage", ""),
+            "stage_progress": int(task.get("stage_progress", 0) or 0),
+            "detail": task.get("detail", ""),
             "mtime": os.path.getmtime(task_path)
             if os.path.isdir(task_path)
             else history_task.get("mtime", 0),
@@ -554,6 +562,9 @@ def _collect_task_summaries(limit=20):
             or task_id,
             "state": const.TASK_STATE_PROCESSING,
             "progress": history_task.get("progress", 0),
+            "stage": history_task.get("stage", ""),
+            "stage_progress": history_task.get("stage_progress", 0),
+            "detail": history_task.get("detail", ""),
             "mtime": active_task.get("mtime")
             or history_task.get("mtime", datetime.now().timestamp()),
             "task_path": task_path,
@@ -699,6 +710,8 @@ def _render_task_table(filtered_tasks, key_prefix):
                 row_cols[1].write(_format_task_time(task["mtime"]))
                 row_cols[2].write(_format_task_subject(task["subject"]))
                 row_cols[3].write(f"{task['progress']}%")
+                if task.get("detail"):
+                    row_cols[3].caption(task["detail"])
 
                 action_cols = row_cols[4].columns(
                     4,
@@ -2191,7 +2204,7 @@ def _render_audio_settings(panel, params):
 
             # 配音方式是音频设置的一级状态，负责明确区分自动配音、用户上传和无配音。
             # 旧配置没有 voice_mode 时，根据原 tts_server 的无配音哨兵保持兼容。
-            saved_tts_server = config.ui.get("tts_server", "azure-tts-v1")
+            saved_tts_server = config.ui.get("tts_server")
             saved_voice_mode = config.ui.get("voice_mode")
             if saved_voice_mode not in {
                 VOICE_MODE_TTS,
@@ -2203,6 +2216,7 @@ def _render_audio_settings(panel, params):
                     if saved_tts_server == voice.NO_VOICE_NAME
                     else VOICE_MODE_TTS
                 )
+            saved_tts_server = normalize_tts_server(saved_tts_server)
             voice_mode_options = [VOICE_MODE_TTS, VOICE_MODE_UPLOAD, VOICE_MODE_NONE]
             voice_mode_labels = {
                 VOICE_MODE_TTS: tr("Automatic Voiceover"),
@@ -2220,36 +2234,21 @@ def _render_audio_settings(panel, params):
             config.ui["voice_mode"] = voice_mode
             tts_mode_enabled = voice_mode == VOICE_MODE_TTS
 
-            # Provider 下拉只负责选择自动配音服务；无配音已经由上方模式控制，
-            # 不再作为 TTS Provider 混入列表，避免两个入口表达同一状态。
-            tts_servers = [
-                ("azure-tts-v1", "Azure TTS V1"),
-                ("azure-tts-v2", "Azure TTS V2"),
-                ("siliconflow", "SiliconFlow TTS"),
-                ("gemini-tts", "Google Gemini TTS"),
-                ("mimo-tts", "Xiaomi MiMo TTS"),
-                ("elevenlabs", "ElevenLabs TTS"),
-                ("chatterbox", "Chatterbox TTS"),
-                ("local-cosyvoice", "Local CosyVoice3"),
-            ]
-
-            tts_server_values = [server_value for server_value, _ in tts_servers]
-            if saved_tts_server not in tts_server_values:
-                saved_tts_server = "azure-tts-v1"
+            # 自动配音固定使用本地 CosyVoice3；上传音频和无配音仍由上方
+            # voice mode 控制，不再把云端服务暴露为可选 Provider。
+            tts_servers = automatic_tts_server_options()
+            tts_server_labels = dict(tts_servers)
 
             if tts_mode_enabled:
-                selected_tts_server = stable_selectbox(
-                    tr("Voiceover Service"),
-                    options=tts_server_values,
-                    default_value=saved_tts_server,
-                    key="tts_server_select",
-                    format_func=lambda value: dict(
-                        (v, label) for v, label in tts_servers
-                    )[value],
+                selected_tts_server = LOCAL_TTS_SERVER
+                st.info(
+                    f"{tr('Voiceover Service')}: "
+                    f"{tts_server_labels[selected_tts_server]}"
                 )
             else:
-                # 非自动配音模式不渲染 TTS 控件，但保留上次选择，切回后可以继续使用。
-                selected_tts_server = saved_tts_server
+                # 非自动配音模式不渲染 TTS 控件，配置仍保持本地 Provider，
+                # 切回自动配音时无需恢复隐藏的云端选择。
+                selected_tts_server = LOCAL_TTS_SERVER
 
             config.ui["tts_server"] = selected_tts_server
 

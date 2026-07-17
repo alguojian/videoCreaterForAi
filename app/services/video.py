@@ -43,6 +43,13 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import bgm as bgm_service, emphasis
+from app.services.video_acceleration import (
+    AUTO_VIDEO_CODEC,
+    DEFAULT_VIDEO_CODEC,
+    PREFERRED_HARDWARE_CODEC,
+    choose_video_codec,
+    is_fast_subtitle_path_supported,
+)
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
@@ -87,8 +94,9 @@ _MIN_MATERIAL_DIMENSION = 480
 # 丢弃，最终以 "no valid materials found" 整体失败。这里留一个很小的容差，
 # 既能放行仅仅因为取整而略低于阈值的素材，也仍然能挡住真正的低清素材。
 _MIN_DIMENSION_TOLERANCE = 10
-_DEFAULT_VIDEO_CODEC = "libx264"
+_DEFAULT_VIDEO_CODEC = DEFAULT_VIDEO_CODEC
 _SUPPORTED_VIDEO_CODECS = (
+    AUTO_VIDEO_CODEC,
     "libx264",
     "h264_nvenc",
     "h264_amf",
@@ -198,12 +206,12 @@ def _get_configured_video_codec() -> str:
     参数导致输出格式不可控，甚至让生成任务在后续阶段才失败。
     """
     configured_codec = str(
-        config.app.get("video_codec", _DEFAULT_VIDEO_CODEC) or _DEFAULT_VIDEO_CODEC
+        config.app.get("video_codec", AUTO_VIDEO_CODEC) or AUTO_VIDEO_CODEC
     ).strip()
     if configured_codec not in _SUPPORTED_VIDEO_CODECS:
         logger.warning(
             f"unsupported video codec configured: {configured_codec}, "
-            f"fallback to {_DEFAULT_VIDEO_CODEC}"
+            f"fallback to {AUTO_VIDEO_CODEC}"
         )
         return _DEFAULT_VIDEO_CODEC
     return configured_codec
@@ -249,6 +257,18 @@ def _get_effective_video_codec(preferred_codec: str | None = None) -> str:
     实际编码失败过，也直接回退，避免一个任务里每个片段都重复失败。
     """
     selected_codec = preferred_codec or _get_configured_video_codec()
+    if selected_codec == AUTO_VIDEO_CODEC:
+        ffmpeg_binary = utils.get_ffmpeg_binary()
+        available = (
+            {PREFERRED_HARDWARE_CODEC}
+            if _ffmpeg_encoder_exists(ffmpeg_binary, PREFERRED_HARDWARE_CODEC)
+            else set()
+        )
+        return choose_video_codec(
+            AUTO_VIDEO_CODEC,
+            available,
+            _runtime_disabled_video_codecs,
+        )
     if selected_codec == _DEFAULT_VIDEO_CODEC:
         return _DEFAULT_VIDEO_CODEC
 
@@ -854,6 +874,7 @@ def combine_scene_videos(
     max_clip_duration,
     threads,
     clip_speed,
+    progress_callback=None,
 ):
     plans = list(scene_plans)
     if not plans:
@@ -890,7 +911,7 @@ def combine_scene_videos(
 
     try:
         scene_files: list[str] = []
-        for plan in ordered_plans:
+        for scene_number, plan in enumerate(ordered_plans, start=1):
             durations = {}
             for video_path in plan.video_paths:
                 probed_duration = _probe_video_duration(video_path)
@@ -915,6 +936,12 @@ def combine_scene_videos(
                 clip_speed=normalized_speed,
             )
             scene_files.append(scene_file)
+            if progress_callback:
+                progress_callback(
+                    scene_number,
+                    len(ordered_plans),
+                    f"场景拼接 {scene_number}/{len(ordered_plans)}",
+                )
 
         total_duration = math.fsum(
             float(plan.required_duration) for plan in ordered_plans
@@ -952,6 +979,7 @@ def combine_videos(
     max_clip_duration: int = 5,
     threads: int = 2,
     clip_speed: float = 1.0,
+    progress_callback=None,
 ) -> str:
     audio_clip = AudioFileClip(audio_file)
     try:
@@ -1124,6 +1152,11 @@ def combine_videos(
                 )
             )
             video_duration += clip_duration_saved
+            if progress_callback:
+                progress_callback(
+                    min(100, int(round(video_duration / required_video_duration * 100))),
+                    f"素材片段 {i + 1}",
+                )
             
         except Exception as e:
             logger.error(f"failed to process clip: {str(e)}")
@@ -1389,6 +1422,191 @@ def resolve_emphasis_font_path(font_name: str, sample: str) -> str:
     return resolved.replace("\\", "/") if os.name == "nt" else resolved
 
 
+def _escape_ffmpeg_filter_value(value: str) -> str:
+    """Escape a Windows or POSIX path embedded in an FFmpeg filter argument."""
+    return (
+        str(value)
+        .replace("\\", "/")
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+    )
+
+
+def _ass_color(hex_color: str, default: str) -> str:
+    value = str(hex_color or default).strip().lstrip("#")
+    if len(value) != 6 or any(char not in "0123456789abcdefABCDEF" for char in value):
+        value = default.lstrip("#")
+    red, green, blue = value[0:2], value[2:4], value[4:6]
+    return f"&H00{blue}{green}{red}".upper()
+
+
+def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> str:
+    alignment = {"bottom": 2, "center": 5, "top": 8}[params.subtitle_position]
+    font_name = Path(font_path).stem
+    force_style = ",".join(
+        [
+            f"FontName={font_name}",
+            f"FontSize={int(params.font_size)}",
+            f"PrimaryColour={_ass_color(params.text_fore_color, '#FFFFFF')}",
+            f"OutlineColour={_ass_color(params.stroke_color, '#000000')}",
+            f"Outline={max(0, int(round(float(params.stroke_width))))}",
+            f"Alignment={alignment}",
+            "MarginV=42",
+        ]
+    )
+    subtitle_file = _escape_ffmpeg_filter_value(os.path.abspath(subtitle_path))
+    fonts_dir = _escape_ffmpeg_filter_value(os.path.dirname(os.path.abspath(font_path)))
+    return (
+        "subtitles="
+        f"filename='{subtitle_file}':fontsdir='{fonts_dir}':"
+        f"force_style='{_escape_ffmpeg_filter_value(force_style)}'"
+    )
+
+
+def _run_ffmpeg_with_progress(
+    command: list[str],
+    total_duration: float,
+    progress_callback=None,
+) -> tuple[bool, str]:
+    """Run FFmpeg's machine-readable progress protocol and return diagnostics."""
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        return False, str(exc)
+
+    last_progress = -1
+    try:
+        for line in process.stdout or ():
+            key, _, raw_value = line.strip().partition("=")
+            if key == "out_time_ms":
+                try:
+                    current_seconds = int(raw_value) / 1_000_000
+                except ValueError:
+                    continue
+                if total_duration > 0:
+                    current_progress = max(
+                        0,
+                        min(100, int(round(current_seconds / total_duration * 100))),
+                    )
+                    if progress_callback and current_progress != last_progress:
+                        progress_callback(current_progress, f"FFmpeg 编码 {current_progress}%")
+                        last_progress = current_progress
+        stderr = process.stderr.read() if process.stderr else ""
+        return process.wait() == 0, stderr.strip()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def _generate_video_with_fast_ffmpeg(
+    video_path: str,
+    audio_path: str,
+    subtitle_path: str,
+    output_file: str,
+    params: VideoParams,
+    font_path: str,
+    progress_callback=None,
+) -> bool:
+    """Burn ordinary SRT subtitles with one FFmpeg pass instead of MoviePy/PIL."""
+    if not is_fast_subtitle_path_supported(params, subtitle_path):
+        return False
+    if not os.path.isfile(subtitle_path):
+        return False
+    if not os.path.isfile(font_path):
+        logger.warning(f"fast subtitle path skipped because font is missing: {font_path}")
+        return False
+
+    try:
+        total_duration = _probe_video_duration(video_path)
+    except Exception as exc:
+        logger.warning(f"fast subtitle path skipped because duration probe failed: {exc}")
+        return False
+
+    bgm_file = get_bgm_file(bgm_type=params.bgm_type, bgm_file=params.bgm_file)
+    subtitle_filter = _build_fast_subtitle_filter(params, subtitle_path, font_path)
+    effective_codec = _get_effective_video_codec()
+    base_command = [
+        utils.get_ffmpeg_binary(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        video_path,
+        "-i",
+        audio_path,
+    ]
+    if bgm_file:
+        base_command.extend(["-stream_loop", "-1", "-i", bgm_file])
+        filter_complex = (
+            f"[0:v]{subtitle_filter}[v];"
+            f"[1:a]volume={float(params.voice_volume):.4f}[voice];"
+            f"[2:a]volume={float(params.bgm_volume):.4f}[bgm];"
+            "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=3[a]"
+        )
+        base_command.extend(["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]"])
+    else:
+        base_command.extend(
+            ["-vf", subtitle_filter, "-map", "0:v:0", "-map", "1:a:0"]
+        )
+    base_command.extend(
+        [
+            "-c:v",
+            effective_codec,
+            "-preset",
+            "p4" if effective_codec == "h264_nvenc" else "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            audio_codec,
+            "-b:a",
+            audio_bitrate,
+            "-shortest",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            output_file,
+        ]
+    )
+
+    for codec in (effective_codec, _DEFAULT_VIDEO_CODEC):
+        if codec != effective_codec and effective_codec == _DEFAULT_VIDEO_CODEC:
+            continue
+        command = list(base_command)
+        command[command.index("-c:v") + 1] = codec
+        command[command.index("-preset") + 1] = (
+            "p4" if codec == "h264_nvenc" else "veryfast"
+        )
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        if progress_callback:
+            progress_callback(0, f"FFmpeg 编码 0%（{codec}）")
+        succeeded, diagnostics = _run_ffmpeg_with_progress(
+            command, total_duration, progress_callback
+        )
+        if succeeded and os.path.isfile(output_file) and os.path.getsize(output_file) > 0:
+            if codec != effective_codec:
+                _disable_runtime_video_codec(effective_codec, diagnostics or "fast path failed")
+            return True
+        logger.warning(
+            f"fast subtitle FFmpeg encode failed with {codec}: "
+            f"{diagnostics[-1000:] if diagnostics else 'no diagnostics'}"
+        )
+
+    if os.path.exists(output_file):
+        os.remove(output_file)
+    return False
+
+
 def _emphasis_scale(animation: str, current_time: float, duration: float) -> float:
     entrance = min(0.22, max(duration / 2, 0.01))
     progress = min(max(current_time / entrance, 0.0), 1.0)
@@ -1621,6 +1839,7 @@ def generate_video(
     output_file: str,
     params: VideoParams,
     emphasis_path: str = "",
+    progress_callback=None,
 ):
     aspect = VideoAspect(params.video_aspect)
     video_width, video_height = aspect.to_resolution()
@@ -1646,6 +1865,18 @@ def generate_video(
             font_path = font_path.replace("\\", "/")
 
         logger.info(f"  ⑥ font: {font_path}")
+
+    if _generate_video_with_fast_ffmpeg(
+        video_path=video_path,
+        audio_path=audio_path,
+        subtitle_path=subtitle_path,
+        output_file=output_file,
+        params=params,
+        font_path=font_path,
+        progress_callback=progress_callback,
+    ):
+        logger.info("fast FFmpeg subtitle path completed")
+        return
 
     def resolve_subtitle_background_color():
         # 兼容历史参数：API 里 `text_background_color` 既可能是布尔值，

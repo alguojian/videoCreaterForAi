@@ -1309,7 +1309,11 @@ class TestTaskService(unittest.TestCase):
         self.assertIsNone(sub_maker)
         settings.assert_called_once()
         service.return_value.synthesize.assert_called_once_with(
-            task_id, task_dir, "你好，世界。", "local:default"
+            task_id,
+            task_dir,
+            "你好，世界。",
+            "local:default",
+            progress_callback=unittest.mock.ANY,
         )
         tts.assert_not_called()
 
@@ -1614,6 +1618,9 @@ class TestTaskService(unittest.TestCase):
             "complete-video",
             state=tm.const.TASK_STATE_COMPLETE,
             progress=100,
+            stage="complete",
+            stage_progress=100,
+            detail="视频生成完成",
             **result,
         )
 

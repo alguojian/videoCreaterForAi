@@ -13,9 +13,23 @@ from typing import Any
 
 def _load_request(request_path: Path) -> dict[str, Any]:
     payload = json.loads(request_path.read_text(encoding="utf-8"))
-    for field in ("model_dir", "reference_audio", "reference_text", "spoken_text", "output_wav"):
+    for field in ("model_dir", "reference_audio", "reference_text"):
         if not payload.get(field):
             raise ValueError(f"missing request field: {field}")
+    blocks = payload.get("blocks")
+    if blocks:
+        if not isinstance(blocks, list):
+            raise ValueError("request blocks must be a list")
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ValueError("request block must be an object")
+            for field in ("spoken_text", "output_wav"):
+                if not block.get(field):
+                    raise ValueError(f"missing block field: {field}")
+    else:
+        for field in ("spoken_text", "output_wav"):
+            if not payload.get(field):
+                raise ValueError(f"missing request field: {field}")
     return payload
 
 
@@ -90,7 +104,8 @@ def run(request_path: Path) -> dict[str, Any]:
     request = _load_request(request_path)
     model_dir = Path(request["model_dir"]).expanduser().resolve()
     reference_audio = Path(request["reference_audio"]).expanduser().resolve()
-    output_wav = Path(request["output_wav"]).expanduser().resolve()
+    first_output = request.get("output_wav") or request["blocks"][0]["output_wav"]
+    output_wav = Path(first_output).expanduser().resolve()
     if not model_dir.is_dir():
         raise FileNotFoundError(f"CosyVoice model directory does not exist: {model_dir}")
     if not reference_audio.is_file():
@@ -115,23 +130,40 @@ def run(request_path: Path) -> dict[str, Any]:
         if "<|endofprompt|>" not in prompt_text:
             prompt_text += "<|endofprompt|>"
         prompt_text += request["reference_text"]
-        chunks = cosyvoice.inference_zero_shot(
-            request["spoken_text"],
-            prompt_text,
-            str(reference_audio),
-            stream=False,
-        )
-        generated = list(chunks)
-        if not generated:
-            raise RuntimeError("CosyVoice returned no audio chunks")
         sample_rate = int(getattr(cosyvoice, "sample_rate", 24000))
-        _save_audio(output_wav, generated[0]["tts_speech"], sample_rate)
+        blocks = request.get("blocks") or [
+            {
+                "block_id": "001",
+                "spoken_text": request["spoken_text"],
+                "output_wav": str(output_wav),
+            }
+        ]
+        completed_blocks = []
+        for block in blocks:
+            chunks = cosyvoice.inference_zero_shot(
+                block["spoken_text"],
+                prompt_text,
+                str(reference_audio),
+                stream=False,
+            )
+            generated = list(chunks)
+            if not generated:
+                raise RuntimeError(
+                    f"CosyVoice returned no audio chunks for block {block.get('block_id', '')}"
+                )
+            block_output = Path(block["output_wav"]).expanduser().resolve()
+            _save_audio(block_output, generated[0]["tts_speech"], sample_rate)
+            completed_blocks.append(
+                {"block_id": block.get("block_id", ""), "audio_file": str(block_output)}
+            )
     return {
         "status": "completed",
         "audio_file": str(output_wav),
         "sample_rate": sample_rate,
         "model_dir": str(model_dir),
         "use_rl_model": use_rl_model,
+        "blocks_completed": len(completed_blocks),
+        "blocks": completed_blocks,
     }
 
 

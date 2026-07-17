@@ -40,19 +40,58 @@ def test_synthesize_uses_profile_and_writes_manifest(tmp_path: Path):
 
     def fake_runner(python, worker, request, task_dir, **kwargs):
         requests.append(request)
-        _write_wav(Path(request["output_wav"]), 2400)
-        return {"status": "completed", "sample_rate": 24000}
+        for block in request["blocks"]:
+            _write_wav(Path(block["output_wav"]), 2400)
+        return {
+            "status": "completed",
+            "sample_rate": 24000,
+            "blocks_completed": len(request["blocks"]),
+        }
 
     service = LocalVoiceService(settings, runner=fake_runner)
     result = service.synthesize("task-1", tmp_path / "task-1", "第一句。第二句。", "local:speaker")
 
     assert result.audio_file.is_file()
     assert result.duration == 0.3
-    assert len(requests) == 2
+    assert len(requests) == 1
     assert requests[0]["reference_text"] == profile.reference_text
     assert requests[0]["instruction"] == profile.default_instruction
-    assert requests[0]["spoken_text"] == "第一句。"
+    assert requests[0]["blocks"][0]["spoken_text"] == "第一句。"
     assert (tmp_path / "task-1" / "local_voice_manifest.json").is_file()
+
+
+def test_synthesize_batches_all_blocks_into_one_worker_request(tmp_path: Path):
+    reference = tmp_path / "source.wav"
+    _write_wav(reference, 2400)
+    cosyvoice_repo = tmp_path / "cosyvoice-repo"
+    (cosyvoice_repo / "asset").mkdir(parents=True)
+    _write_wav(cosyvoice_repo / "asset" / "zero_shot_prompt.wav", 2400)
+    settings = LocalVoiceSettings.from_mapping(
+        {
+            "cosyvoice_python": "tools/cosyvoice312/python.exe",
+            "cosyvoice_worker": "workers/cosyvoice_worker/generate.py",
+            "cosyvoice_model_dir": "resource/models/cosyvoice",
+            "cosyvoice_repo": str(cosyvoice_repo),
+            "voice_profile_root": str(tmp_path / "profiles"),
+            "block_max_chars": 4,
+        },
+        project_root=tmp_path,
+    )
+    requests = []
+
+    def fake_runner(python, worker, request, task_dir, **kwargs):
+        requests.append(request)
+        for block in request["blocks"]:
+            _write_wav(Path(block["output_wav"]), 2400)
+        return {"status": "completed", "blocks_completed": len(request["blocks"])}
+
+    service = LocalVoiceService(settings, runner=fake_runner)
+    result = service.synthesize("task-batch", tmp_path / "task-batch", "第一句。第二句。")
+
+    assert result.audio_file.is_file()
+    assert len(requests) == 1
+    assert len(requests[0]["blocks"]) == 2
+    assert requests[0]["blocks"][0]["spoken_text"] == "第一句。"
 
 
 def test_align_subtitle_writes_srt(tmp_path: Path):

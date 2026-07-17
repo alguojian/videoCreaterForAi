@@ -209,11 +209,12 @@ subtitle_provider = "edge"
 # Windows example: ffmpeg_path = "C:\\path\\to\\ffmpeg.exe"
 # ffmpeg_path = ""
 
-# Leave unset to follow the app default (libx264). Hardware encoders are optional;
+# Leave unset, or set to "auto", to prefer NVIDIA NVENC when available and
+# automatically fall back to libx264. Hardware encoders are optional;
 # unsupported encoders automatically fall back to libx264.
-# Available values: "libx264", "h264_nvenc", "h264_amf", "h264_qsv",
+# Available values: "auto", "libx264", "h264_nvenc", "h264_amf", "h264_qsv",
 # "h264_mf", "h264_videotoolbox".
-# video_codec = "libx264"
+# video_codec = "auto"
 
 # -----------------------------------------------------------------------------
 # Storage and Task Runtime / 存储与任务运行
@@ -319,6 +320,7 @@ voices = ["default-Female"]
 # Keep disabled until the standalone workers pass their smoke tests.
 enabled = false
 provider = "cosyvoice3"
+use_rl_model = false
 subtitle_provider = "qwen_forced_aligner"
 
 # These project-local paths are Windows directory links created by the setup script.

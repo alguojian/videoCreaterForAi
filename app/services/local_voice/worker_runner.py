@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ def run_worker(
     *,
     timeout_seconds: float = 600,
     project_root: str | Path | None = None,
+    progress_callback=None,
 ) -> dict[str, Any]:
     python_path = Path(python_executable).expanduser()
     if not python_path.is_absolute() or not python_path.is_file():
@@ -46,6 +48,32 @@ def run_worker(
     command = [str(python_path), str(script_path), "--request", str(request_path)]
     stdout = ""
     stderr = ""
+    stop_progress = threading.Event()
+    progress_thread = None
+    blocks = request.get("blocks") or []
+    if progress_callback and blocks:
+        def watch_block_outputs():
+            total = len(blocks)
+            last_completed = -1
+            while not stop_progress.wait(0.5):
+                completed_blocks = sum(
+                    1 for block in blocks if Path(block["output_wav"]).is_file()
+                )
+                if completed_blocks != last_completed:
+                    progress_callback(
+                        "audio",
+                        completed_blocks,
+                        total,
+                        f"CosyVoice block {completed_blocks}/{total}",
+                    )
+                    last_completed = completed_blocks
+
+        progress_thread = threading.Thread(
+            target=watch_block_outputs,
+            name="local-voice-progress",
+            daemon=True,
+        )
+        progress_thread.start()
     try:
         completed = subprocess.run(
             command,
@@ -69,6 +97,10 @@ def run_worker(
     except OSError as exc:
         _write_logs(output_dir, worker_name, stdout, stderr)
         raise WorkerExecutionError(f"failed to start worker: {worker_name}") from exc
+    finally:
+        stop_progress.set()
+        if progress_thread:
+            progress_thread.join(timeout=1.0)
 
     _write_logs(output_dir, worker_name, stdout, stderr)
     if completed.returncode != 0:

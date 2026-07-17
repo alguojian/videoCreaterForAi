@@ -1323,12 +1323,12 @@ class TestVideoService(unittest.TestCase):
 
     def test_get_configured_video_codec_uses_stable_default_when_unset(self):
         """
-        WebUI 的“默认”模式不会持久化 video_codec。后端必须在配置缺失时继续
-        明确返回 libx264，不能把空值直接交给 MoviePy 或 FFmpeg 自行决定。
+        WebUI 的“默认”模式不会持久化 video_codec。后端在配置缺失时返回
+        auto，由运行时优先选择可用硬件编码器并保留 CPU 回退。
         """
         config.app.pop("video_codec", None)
 
-        self.assertEqual(vd._get_configured_video_codec(), "libx264")
+        self.assertEqual(vd._get_configured_video_codec(), "auto")
 
     def test_get_configured_video_codec_preserves_explicit_libx264(self):
         """
@@ -1427,7 +1427,7 @@ class TestVideoService(unittest.TestCase):
         """
         config.app["video_codec"] = "h264_nvenc"
 
-        def fake_run(command, capture_output, text, check):
+        def fake_run(command, capture_output, text, check, **kwargs):
             codec_index = command.index("-c:v") + 1
             codec = command[codec_index]
             if codec == "h264_nvenc":
@@ -1757,7 +1757,7 @@ class TestVideoService(unittest.TestCase):
     def test_concat_video_clips_limits_output_to_audio_duration(self):
         """最终拼接时应裁到音频时长，避免安全余量带来明显静音尾巴。"""
 
-        def fake_run(command, capture_output, text, check):
+        def fake_run(command, capture_output, text, check, **kwargs):
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as temp_dir:

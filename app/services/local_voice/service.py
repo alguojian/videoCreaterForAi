@@ -54,6 +54,7 @@ def _repair_alignment_payloads(
 class LocalVoiceSettings:
     project_root: Path
     enabled: bool = False
+    use_rl_model: bool = False
     cosyvoice_python: Path = Path("tools/cosyvoice312/python.exe")
     aligner_python: Path = Path("tools/miniforge3/envs/qwen-aligner/python.exe")
     cosyvoice_worker: Path = Path("workers/cosyvoice_worker/generate.py")
@@ -89,6 +90,7 @@ class LocalVoiceSettings:
         return cls(
             project_root=root,
             enabled=bool(values.get("enabled", False)),
+            use_rl_model=bool(values.get("use_rl_model", False)),
             cosyvoice_python=configured_path("cosyvoice_python", cls.cosyvoice_python),
             aligner_python=configured_path("aligner_python", cls.aligner_python),
             cosyvoice_worker=configured_path("cosyvoice_worker", cls.cosyvoice_worker),
@@ -122,6 +124,7 @@ class LocalVoiceAudioResult:
 
 
 Runner = Callable[..., dict[str, Any]]
+ProgressCallback = Callable[[str, int, int, str], None]
 
 
 class LocalVoiceService:
@@ -154,14 +157,26 @@ class LocalVoiceService:
             raise InvalidVoiceProfileError(f"profile reference audio does not exist: {reference}")
         return reference, profile.reference_text, profile.default_instruction
 
-    def _run(self, python: Path, worker: Path, request: dict[str, Any], task_dir: Path) -> dict[str, Any]:
+    def _run(
+        self,
+        python: Path,
+        worker: Path,
+        request: dict[str, Any],
+        task_dir: Path,
+        progress_callback=None,
+    ) -> dict[str, Any]:
+        kwargs = {
+            "project_root": self.settings.project_root,
+            "timeout_seconds": self.settings.worker_timeout_seconds,
+        }
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
         return self.runner(
             python,
             worker,
             request,
             task_dir,
-            project_root=self.settings.project_root,
-            timeout_seconds=self.settings.worker_timeout_seconds,
+            **kwargs,
         )
 
     def synthesize(
@@ -170,6 +185,7 @@ class LocalVoiceService:
         task_dir: str | Path,
         text: str,
         voice_name: str = "",
+        progress_callback: ProgressCallback | None = None,
     ) -> LocalVoiceAudioResult:
         spoken_text, display_text = normalize_narration(text)
         blocks = split_into_blocks(spoken_text, self.settings.block_max_chars)
@@ -178,26 +194,59 @@ class LocalVoiceService:
         root.mkdir(parents=True, exist_ok=True)
         block_paths: list[Path] = []
         stages: dict[str, str] = {"normalize": "completed", "tts": "running"}
+        block_requests: list[dict[str, str]] = []
 
         for index, block_text in enumerate(blocks, start=1):
             block_dir = root / f"block-{index:03d}"
             block_dir.mkdir(parents=True, exist_ok=True)
             output_wav = block_dir / "speech.wav"
-            request = {
-                "model_dir": str(self.settings.cosyvoice_model_dir),
-                "reference_audio": str(reference_audio),
-                "reference_text": reference_text,
-                "instruction": instruction,
-                "spoken_text": block_text,
-                "cosyvoice_repo": str(self.settings.cosyvoice_repo),
-                "output_wav": str(output_wav),
-                "use_rl_model": True,
-            }
-            result = self._run(self.settings.cosyvoice_python, self.settings.cosyvoice_worker, request, block_dir)
-            if result.get("status") != "completed":
-                raise LocalVoiceError(f"CosyVoice did not complete block {index}")
-            validate_wav(output_wav, sample_rate=self.settings.sample_rate, channels=self.settings.channels)
+            block_requests.append(
+                {
+                    "block_id": f"{index:03d}",
+                    "spoken_text": block_text,
+                    "output_wav": str(output_wav),
+                }
+            )
             block_paths.append(output_wav)
+
+        if progress_callback:
+            progress_callback("audio", 0, len(block_requests), "loading CosyVoice model")
+        request = {
+            "model_dir": str(self.settings.cosyvoice_model_dir),
+            "reference_audio": str(reference_audio),
+            "reference_text": reference_text,
+            "instruction": instruction,
+            "cosyvoice_repo": str(self.settings.cosyvoice_repo),
+            "use_rl_model": self.settings.use_rl_model,
+            "blocks": block_requests,
+        }
+        result = self._run(
+            self.settings.cosyvoice_python,
+            self.settings.cosyvoice_worker,
+            request,
+            root,
+            progress_callback=progress_callback,
+        )
+        if result.get("status") != "completed":
+            raise LocalVoiceError("CosyVoice did not complete the audio blocks")
+        completed_blocks = int(result.get("blocks_completed", len(block_paths)))
+        if completed_blocks != len(block_paths):
+            raise LocalVoiceError(
+                f"CosyVoice completed {completed_blocks}/{len(block_paths)} blocks"
+            )
+        for index, output_wav in enumerate(block_paths, start=1):
+            validate_wav(
+                output_wav,
+                sample_rate=self.settings.sample_rate,
+                channels=self.settings.channels,
+            )
+            if progress_callback:
+                progress_callback(
+                    "audio",
+                    index,
+                    len(block_paths),
+                    f"CosyVoice block {index}/{len(block_paths)}",
+                )
 
         output_audio = Path(task_dir).expanduser().resolve() / "audio.wav"
         duration = concatenate_blocks(
