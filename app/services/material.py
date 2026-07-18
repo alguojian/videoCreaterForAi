@@ -2,6 +2,7 @@ import math
 import os
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List
 from urllib.parse import urlencode
@@ -383,6 +384,57 @@ def _scene_material_directory(task_id: str) -> str:
     return material_directory
 
 
+def _material_download_workers() -> int:
+    try:
+        configured = int(config.app.get("material_download_workers", 4))
+    except (TypeError, ValueError):
+        configured = 4
+    return max(1, min(configured, 8))
+
+
+def _download_scene_candidate_batch(
+    scene_index: int,
+    candidates,
+    save_dir: str,
+    workers: int,
+) -> dict[int, str]:
+    """Download a bounded candidate batch while retaining original indexes."""
+    results: dict[int, str] = {}
+
+    def download(index: int, item):
+        video_url = str(getattr(item, "url", "") or "").strip()
+        logger.info(
+            f"downloading video for scene {scene_index}: {video_url}"
+        )
+        try:
+            return index, save_video(video_url, save_dir)
+        except Exception as exc:
+            logger.error(
+                f"failed to download scene video: {utils.to_json(item)} "
+                f"=> {str(exc)}"
+            )
+            return index, ""
+
+    if workers == 1:
+        for index, item in enumerate(candidates):
+            result_index, saved_path = download(index, item)
+            results[result_index] = saved_path
+        return results
+
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="material-download",
+    ) as executor:
+        futures = [
+            executor.submit(download, index, item)
+            for index, item in enumerate(candidates)
+        ]
+        for future in as_completed(futures):
+            result_index, saved_path = future.result()
+            results[result_index] = saved_path
+    return results
+
+
 def download_scene_materials(
     task_id: str,
     scenes: list[TimedScriptScene],
@@ -399,6 +451,7 @@ def download_scene_materials(
 
     search_videos = _search_function(source)
     material_directory = _scene_material_directory(task_id)
+    download_workers = _material_download_workers()
     plans: list[DownloadedSceneMaterials] = []
     used_video_identities: set[str] = set()
 
@@ -450,6 +503,8 @@ def download_scene_materials(
                 f"query '{search_term}'"
             )
 
+            batch: list[tuple[object, str]] = []
+            queued_identities: set[str] = set()
             for item in candidates:
                 video_url = str(getattr(item, "url", "") or "").strip()
                 video_identity = _video_cache_identity(video_url)
@@ -457,6 +512,7 @@ def download_scene_materials(
                     not video_url
                     or not video_identity
                     or video_identity in used_video_identities
+                    or video_identity in queued_identities
                 ):
                     continue
 
@@ -466,24 +522,30 @@ def download_scene_materials(
                     continue
                 if not math.isfinite(duration) or duration <= 0:
                     continue
+                queued_identities.add(video_identity)
+                batch.append((item, video_identity))
 
-                try:
-                    logger.info(
-                        f"downloading video for scene {scene.index}: {video_url}"
-                    )
-                    saved_video_path = save_video(video_url, material_directory)
-                except Exception as exc:
-                    logger.error(
-                        f"failed to download scene video: {utils.to_json(item)} "
-                        f"=> {str(exc)}"
-                    )
-                    continue
-
-                if not saved_video_path:
-                    continue
-                used_video_identities.add(video_identity)
-                video_paths.append(saved_video_path)
-                covered_duration += min(duration, max_clip_duration_value)
+            for offset in range(0, len(batch), download_workers):
+                current_batch = batch[offset : offset + download_workers]
+                batch_results = _download_scene_candidate_batch(
+                    scene.index,
+                    [item for item, _ in current_batch],
+                    material_directory,
+                    download_workers,
+                )
+                for batch_index, (item, video_identity) in enumerate(current_batch):
+                    saved_video_path = batch_results.get(batch_index, "")
+                    if not saved_video_path:
+                        continue
+                    try:
+                        duration = float(getattr(item, "duration", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    used_video_identities.add(video_identity)
+                    video_paths.append(saved_video_path)
+                    covered_duration += min(duration, max_clip_duration_value)
+                    if covered_duration >= required_duration:
+                        break
                 if covered_duration >= required_duration:
                     break
 

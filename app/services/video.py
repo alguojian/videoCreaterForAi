@@ -734,6 +734,83 @@ def _apply_scene_transition(clip, transition_mode):
     return effects[value](clip)
 
 
+def _render_scene_allocation_with_ffmpeg(
+    output_file: str,
+    allocations: list[SceneClipAllocation],
+    video_aspect,
+    threads: int,
+    clip_speed: float,
+) -> bool:
+    """Render a no-transition scene with one FFmpeg filter graph."""
+    if not allocations:
+        return False
+
+    video_width, video_height = VideoAspect(video_aspect).to_resolution()
+    speed = utils.normalize_clip_speed(clip_speed)
+    filters: list[str] = []
+    total_duration = 0.0
+    command = [utils.get_ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y"]
+
+    for index, allocation in enumerate(allocations):
+        duration = _positive_finite_duration(
+            allocation.duration,
+            f"scene allocation {index + 1} duration",
+        )
+        source_duration = duration * speed
+        total_duration += duration
+        command.extend(["-i", allocation.video_path])
+        filters.append(
+            f"[{index}:v]trim=duration={source_duration:.3f},"
+            f"setpts=(PTS-STARTPTS)/{speed:.6f},"
+            f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
+            f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar=1[v{index}]"
+        )
+
+    inputs = "".join(f"[v{index}]" for index in range(len(allocations)))
+    filters.append(f"{inputs}concat=n={len(allocations)}:v=1:a=0[vout]")
+    effective_codec = _get_effective_video_codec()
+    for codec in (effective_codec, _DEFAULT_VIDEO_CODEC):
+        if codec != effective_codec and effective_codec == _DEFAULT_VIDEO_CODEC:
+            continue
+        run_command = command + [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[vout]",
+            "-an",
+            "-c:v",
+            codec,
+            "-preset",
+            "p4" if codec == "h264_nvenc" else "veryfast",
+            "-threads",
+            str(threads or 2),
+            "-pix_fmt",
+            "yuv420p",
+            "-t",
+            f"{total_duration:.3f}",
+            output_file,
+        ]
+        try:
+            result = subprocess.run(
+                run_command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            logger.warning(f"direct FFmpeg scene render could not start: {exc}")
+            return False
+        if result.returncode == 0:
+            return True
+        logger.warning(
+            f"direct FFmpeg scene render failed with {codec}: "
+            f"{(result.stderr or result.stdout or '').strip()[-1000:]}"
+        )
+
+    return False
+
+
 def _render_scene_allocation(
     output_dir: str,
     scene_index: int,
@@ -755,6 +832,24 @@ def _render_scene_allocation(
     scene_rendered = False
 
     try:
+        transition_value = getattr(video_transition_mode, "value", video_transition_mode)
+        if transition_value in (None, VideoTransitionMode.none.value):
+            fast_scene_file = _create_unique_temp_file(
+                output_dir,
+                prefix=f"scene-{scene_index}-",
+                suffix=".mp4",
+                protected_paths=source_paths,
+            )
+            if _render_scene_allocation_with_ffmpeg(
+                output_file=fast_scene_file,
+                allocations=allocations,
+                video_aspect=video_aspect,
+                threads=threads,
+                clip_speed=speed,
+            ):
+                return fast_scene_file
+            delete_files(fast_scene_file)
+
         for allocation_index, allocation in enumerate(allocations, start=1):
             allocation_duration = _positive_finite_duration(
                 allocation.duration,

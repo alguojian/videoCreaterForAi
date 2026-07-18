@@ -156,3 +156,13 @@ def test_settings_resolve_relative_paths(tmp_path: Path):
 
     assert settings.cosyvoice_model_dir == tmp_path / "resource/models/cosyvoice"
     assert settings.subtitle_provider == "qwen_forced_aligner"
+
+
+def test_settings_use_larger_default_blocks_without_overriding_explicit_value(
+    tmp_path: Path,
+):
+    assert LocalVoiceSettings.from_mapping({}, project_root=tmp_path).block_max_chars == 200
+    explicit = LocalVoiceSettings.from_mapping(
+        {"block_max_chars": 100}, project_root=tmp_path
+    )
+    assert explicit.block_max_chars == 100

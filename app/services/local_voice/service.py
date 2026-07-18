@@ -67,7 +67,7 @@ class LocalVoiceSettings:
     worker_timeout_seconds: float = 600.0
     sample_rate: int = 24000
     channels: int = 1
-    block_max_chars: int = 100
+    block_max_chars: int = 200
     block_pause_ms: int = 250
     subtitle_provider: str = "qwen_forced_aligner"
     subtitle_min_duration_ms: int = 850
@@ -103,7 +103,7 @@ class LocalVoiceSettings:
             worker_timeout_seconds=float(values.get("worker_timeout_seconds", 600)),
             sample_rate=int(values.get("sample_rate", 24000)),
             channels=int(values.get("channels", 1)),
-            block_max_chars=int(values.get("block_max_chars", 100)),
+            block_max_chars=int(values.get("block_max_chars", 200)),
             block_pause_ms=int(values.get("block_pause_ms", 250)),
             subtitle_provider=str(values.get("subtitle_provider", "qwen_forced_aligner")),
             subtitle_min_duration_ms=int(values.get("subtitle_min_duration_ms", 850)),

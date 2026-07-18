@@ -337,7 +337,7 @@ default_voice_profile = ""
 
 sample_rate = 24000
 channels = 1
-block_max_chars = 100
+block_max_chars = 200
 block_pause_ms = 250
 trim_silence = true
 loudness_target_lufs = -16.0

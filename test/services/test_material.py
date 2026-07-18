@@ -1,6 +1,8 @@
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,48 @@ class TestSceneMaterialAcquisition(unittest.TestCase):
         config.app.update(self.original_app_config)
         config.proxy.clear()
         config.proxy.update(self.original_proxy_config)
+
+    def test_download_scene_materials_uses_bounded_concurrency_and_keeps_order(self):
+        scene = TimedScriptScene(1, 1, 1, ("parallel query",), 0.0, 20.0)
+        candidates = [
+            material.MaterialInfo(
+                provider="pixabay", url=f"https://x/{index}.mp4", duration=4
+            )
+            for index in range(5)
+        ]
+        active = 0
+        maximum_active = 0
+        lock = threading.Lock()
+
+        def fake_save(video_url, save_dir):
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+            return f"saved/{Path(video_url).name}"
+
+        with (
+            patch.dict(config.app, {"material_download_workers": 2}),
+            patch.object(material, "search_videos_pixabay", return_value=candidates),
+            patch.object(material, "save_video", side_effect=fake_save),
+        ):
+            plans = material.download_scene_materials(
+                task_id="parallel-scene-task",
+                scenes=[scene],
+                source="pixabay",
+                video_aspect=VideoAspect.landscape,
+                max_clip_duration=5,
+            )
+
+        self.assertLessEqual(maximum_active, 2)
+        self.assertGreater(maximum_active, 1)
+        self.assertEqual(
+            plans[0].video_paths,
+            tuple(f"saved/{index}.mp4" for index in range(5)),
+        )
 
     def test_download_scene_materials_tries_fallbacks_and_covers_each_scene(self):
         scenes = [

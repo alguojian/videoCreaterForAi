@@ -187,6 +187,40 @@ def test_apply_scene_transition_accepts_none_and_rejects_unknown_value():
         vd._apply_scene_transition(clip, "Spin")
 
 
+def test_render_scene_allocation_ffmpeg_builds_single_concat_filter(tmp_path):
+    output_file = tmp_path / "scene.mp4"
+    allocations = [
+        vd.SceneClipAllocation("first.mp4", 2.0),
+        vd.SceneClipAllocation("second.mp4", 1.5),
+    ]
+
+    with (
+        patch.object(vd, "_get_effective_video_codec", return_value="h264_nvenc"),
+        patch.object(
+            vd.subprocess,
+            "run",
+            return_value=types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ) as run,
+    ):
+        assert vd._render_scene_allocation_with_ffmpeg(
+            output_file=str(output_file),
+            allocations=allocations,
+            video_aspect=VideoAspect.landscape,
+            threads=2,
+            clip_speed=1.0,
+        ) is True
+
+    command = run.call_args.args[0]
+    assert command.count("-i") == 2
+    filter_graph = command[command.index("-filter_complex") + 1]
+    assert "trim=duration=2" in filter_graph
+    assert "scale=1920:1080:force_original_aspect_ratio=decrease" in filter_graph
+    assert "pad=1920:1080" in filter_graph
+    assert "concat=n=2:v=1:a=0" in filter_graph
+    assert command[command.index("-c:v") + 1] == "h264_nvenc"
+    assert command[command.index("-t") + 1] == "3.500"
+
+
 def test_render_scene_allocation_honors_speed_and_exact_output_duration(tmp_path):
     class FakeClip:
         def __init__(self):
@@ -213,6 +247,7 @@ def test_render_scene_allocation_honors_speed_and_exact_output_duration(tmp_path
         written_durations.append(value_clip.duration)
 
     with (
+        patch.object(vd, "_render_scene_allocation_with_ffmpeg", return_value=False),
         patch.object(vd, "_open_video_clip_quietly", return_value=clip),
         patch.object(vd, "_write_videofile_with_codec_fallback", side_effect=capture_write),
         patch.object(vd, "concat_video_clips_with_ffmpeg") as concat,
@@ -241,7 +276,8 @@ def test_render_scene_allocation_honors_speed_and_exact_output_duration(tmp_path
     assert Path(clip_files[0]).parent == tmp_path
     assert Path(clip_files[0]).name.startswith("scene-1-clip-1-")
     close.assert_called_once_with(clip)
-    delete.assert_called_once_with(clip_files)
+    assert delete.call_args_list[0].args[0].endswith(".mp4")
+    assert delete.call_args_list[1].args[0] == clip_files
 
 
 def test_render_scene_allocation_normalizes_sub_millisecond_duration_residue(
