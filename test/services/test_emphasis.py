@@ -384,12 +384,16 @@ def test_parse_manual_terms_deduplicates_chinese_and_english_commas():
     ]
 
 
-def test_emphasis_sound_manifest_has_twelve_short_local_wav_files():
+def test_emphasis_sound_manifest_registers_all_thirteen_local_wav_files():
     project_root = Path(__file__).parent.parent.parent
 
     manifest = load_sound_manifest(project_root)
 
-    assert len(manifest) == 12
+    assert len(manifest) == 13
     assert {item.group for item in manifest} == {"pop", "whoosh", "hit", "sparkle"}
     assert all((project_root / item.file).is_file() for item in manifest)
-    assert all(read_wav_duration(project_root / item.file) <= 0.6 for item in manifest)
+    assert all(read_wav_duration(project_root / item.file) > 0 for item in manifest)
+    assert all(
+        item.duration == pytest.approx(read_wav_duration(project_root / item.file))
+        for item in manifest
+    )

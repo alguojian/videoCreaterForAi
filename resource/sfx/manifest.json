@@ -1,79 +1,19 @@
 {
-  "source_repo": "https://github.com/Calinou/kenney-ui-audio.git",
-  "license": "CC0-1.0",
-  "source_license_file": "LICENSE.txt",
+  "source": "user-selected Jianying hot audio assets",
+  "license": "not specified",
   "sounds": [
-    {
-      "sound_id": "pop-01",
-      "group": "pop",
-      "file": "resource/sfx/pop-01.wav",
-      "duration": 0.103039
-    },
-    {
-      "sound_id": "pop-02",
-      "group": "pop",
-      "file": "resource/sfx/pop-02.wav",
-      "duration": 0.056599
-    },
-    {
-      "sound_id": "pop-03",
-      "group": "pop",
-      "file": "resource/sfx/pop-03.wav",
-      "duration": 0.088526
-    },
-    {
-      "sound_id": "whoosh-01",
-      "group": "whoosh",
-      "file": "resource/sfx/whoosh-01.wav",
-      "duration": 0.236553
-    },
-    {
-      "sound_id": "whoosh-02",
-      "group": "whoosh",
-      "file": "resource/sfx/whoosh-02.wav",
-      "duration": 0.062404
-    },
-    {
-      "sound_id": "whoosh-03",
-      "group": "whoosh",
-      "file": "resource/sfx/whoosh-03.wav",
-      "duration": 0.085624
-    },
-    {
-      "sound_id": "hit-01",
-      "group": "hit",
-      "file": "resource/sfx/hit-01.wav",
-      "duration": 0.387483
-    },
-    {
-      "sound_id": "hit-02",
-      "group": "hit",
-      "file": "resource/sfx/hit-02.wav",
-      "duration": 0.312018
-    },
-    {
-      "sound_id": "hit-03",
-      "group": "hit",
-      "file": "resource/sfx/hit-03.wav",
-      "duration": 0.068209
-    },
-    {
-      "sound_id": "sparkle-01",
-      "group": "sparkle",
-      "file": "resource/sfx/sparkle-01.wav",
-      "duration": 0.364263
-    },
-    {
-      "sound_id": "sparkle-02",
-      "group": "sparkle",
-      "file": "resource/sfx/sparkle-02.wav",
-      "duration": 0.41941
-    },
-    {
-      "sound_id": "sparkle-03",
-      "group": "sparkle",
-      "file": "resource/sfx/sparkle-03.wav",
-      "duration": 0.370068
-    }
+    {"sound_id":"pop-01","group":"pop","file":"resource/sfx/01_嗞1.wav","duration":0.366667},
+    {"sound_id":"pop-02","group":"pop","file":"resource/sfx/02_任务完成.wav","duration":1.566667},
+    {"sound_id":"pop-03","group":"pop","file":"resource/sfx/03_仙气音效.wav","duration":2.766667},
+    {"sound_id":"jianying-13","group":"pop","file":"resource/sfx/05_热门列表第05项.wav","duration":0.666667},
+    {"sound_id":"jianying-14","group":"pop","file":"resource/sfx/06_砰-拳击声.wav","duration":0.366667},
+    {"sound_id":"whoosh-01","group":"whoosh","file":"resource/sfx/07_Ding-可爱提示音.wav","duration":1.566667},
+    {"sound_id":"whoosh-02","group":"whoosh","file":"resource/sfx/09_咳嗽.wav","duration":0.9},
+    {"sound_id":"jianying-16","group":"whoosh","file":"resource/sfx/13_仙宝音效.wav","duration":2.722222},
+    {"sound_id":"hit-01","group":"hit","file":"resource/sfx/16_提示音1.wav","duration":0.907415},
+    {"sound_id":"hit-03","group":"hit","file":"resource/sfx/20_拍照声3.wav","duration":0.907392},
+    {"sound_id":"sparkle-01","group":"sparkle","file":"resource/sfx/22_咳1.wav","duration":0.105306122},
+    {"sound_id":"sparkle-02","group":"sparkle","file":"resource/sfx/30_嗖-短故事声.wav","duration":1.990896},
+    {"sound_id":"sparkle-03","group":"sparkle","file":"resource/sfx/48_音效单击.wav","duration":0.497729}
   ]
 }

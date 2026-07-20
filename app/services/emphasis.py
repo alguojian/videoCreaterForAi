@@ -28,9 +28,9 @@ EMPHASIS_ANIMATIONS = (
     "stamp",
 )
 _SOUND_IDS_BY_GROUP = {
-    "pop": ("pop-01", "pop-02", "pop-03"),
-    "whoosh": ("whoosh-01", "whoosh-02", "whoosh-03"),
-    "hit": ("hit-01", "hit-02", "hit-03"),
+    "pop": ("pop-01", "pop-02", "pop-03", "jianying-13", "jianying-14"),
+    "whoosh": ("whoosh-01", "whoosh-02", "jianying-16"),
+    "hit": ("hit-01", "hit-03"),
     "sparkle": ("sparkle-01", "sparkle-02", "sparkle-03"),
 }
 EMPHASIS_SOUND_IDS = tuple(

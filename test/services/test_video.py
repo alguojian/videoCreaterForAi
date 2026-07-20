@@ -1351,7 +1351,7 @@ class TestVideoService(unittest.TestCase):
 
     def test_create_emphasis_audio_clips_normalizes_peak_before_mix(self):
         cue = EmphasisCue(
-            "重点词", 1.0, 2.0, "#FF5A36", "slide_left", "whoosh-03", "left"
+            "重点词", 1.0, 2.0, "#FF5A36", "slide_left", "whoosh-02", "left"
         )
         project_root = Path(__file__).parent.parent.parent
 
