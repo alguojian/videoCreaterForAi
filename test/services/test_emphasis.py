@@ -81,9 +81,36 @@ def test_same_subtitle_terms_overlap_in_three_distinct_layers():
 
     assert [cue.subtitle_index for cue in cues] == [7, 7, 7]
     assert [cue.layer for cue in cues] == [0, 1, 2]
-    assert {cue.position for cue in cues} == {"left", "center", "right"}
+    assert {cue.position for cue in cues}.issubset(set(emphasis.EMPHASIS_POSITIONS))
     assert cues[0].start < cues[1].start < cues[2].start
     assert [cue.end for cue in cues] == [4.0, 4.0, 4.0]
+
+
+def test_emphasis_cues_disappear_when_their_sentence_ends():
+    subtitles = [
+        (1, "00:00:00,000 --> 00:00:06,000", "你好啊。今天天气怎么样？"),
+    ]
+
+    cues = build_emphasis_cues(
+        "sentence-end-task",
+        subtitles,
+        ["你好啊", "今天天气怎么样"],
+    )
+
+    assert [cue.text for cue in cues] == ["你好啊", "今天天气怎么样"]
+    assert cues[0].end == pytest.approx(1.8)
+    assert cues[1].end == pytest.approx(6.0)
+
+
+def test_markdown_emphasis_cues_disappear_when_their_sentence_ends():
+    rows = [
+        TimedScriptRow(1, "你好啊。今天天气怎么样？", ("你好啊", "今天天气怎么样"), 0.0, 6.0),
+    ]
+
+    cues = emphasis.build_markdown_emphasis_cues("sentence-end-task", rows)
+
+    assert cues[0].end == pytest.approx(1.8)
+    assert cues[1].end == pytest.approx(6.0)
 
 
 def test_fourth_term_replaces_the_old_high_layer_term():
@@ -238,7 +265,7 @@ def test_markdown_and_legacy_cues_with_the_same_numeric_index_use_separate_group
     assert all(cue.end == 5.0 for cue in arranged)
 
 
-def test_legacy_grouping_keeps_the_existing_seeded_position_order():
+def test_grouping_keeps_each_cue_weighted_position_while_assigning_safe_layers():
     cues = [
         EmphasisCue(
             "aa",
@@ -275,8 +302,8 @@ def test_legacy_grouping_keeps_the_existing_seeded_position_order():
     arranged = emphasis._arrange_grouped_cues("legacy-seed", cues)
 
     assert [(cue.layer, cue.position, cue.end) for cue in arranged] == [
-        (0, "center", 4.0),
-        (1, "right", 4.0),
+        (0, "left", 4.0),
+        (1, "left", 4.0),
         (2, "left", 4.0),
     ]
 

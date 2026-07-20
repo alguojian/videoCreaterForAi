@@ -612,6 +612,7 @@ class TestTaskService(unittest.TestCase):
         params = VideoParams(
             video_subject="婚姻二字",
             video_source="pixabay",
+            emphasis_enabled=False,
             markdown_script={
                 "title": "婚姻二字",
                 "rows": [
@@ -774,6 +775,7 @@ class TestTaskService(unittest.TestCase):
         params = VideoParams(
             video_subject="婚姻二字",
             video_source="pixabay",
+            emphasis_enabled=False,
             markdown_script={
                 "title": "婚姻二字",
                 "rows": [

@@ -49,21 +49,26 @@ class TestVideoParams(unittest.TestCase):
             "婚姻二字，是两个人共同写下的承诺。",
         )
 
-    def test_defaults_to_landscape_with_emphasis_disabled(self):
+    def test_defaults_to_landscape_with_emphasis_enabled(self):
         params = VideoParams(video_subject="重点词测试")
 
         self.assertEqual(params.video_aspect, VideoAspect.landscape.value)
-        self.assertFalse(params.emphasis_enabled)
+        self.assertEqual(params.voice_name, "local:default")
+        self.assertEqual(params.video_clip_duration, 5)
+        self.assertTrue(params.match_materials_to_script)
+        self.assertEqual(params.subtitle_position, "bottom")
+        self.assertTrue(params.emphasis_enabled)
         self.assertEqual(params.emphasis_terms, "")
         self.assertTrue(params.emphasis_random_colors)
-        self.assertTrue(params.emphasis_random_animations)
+        self.assertFalse(params.emphasis_random_animations)
         self.assertTrue(params.emphasis_sfx_enabled)
         self.assertEqual(params.emphasis_sfx_volume, 0.5)
+        self.assertEqual(params.stroke_width, 1.0)
 
-    def test_video_params_uses_project_simhei_for_emphasis(self):
+    def test_video_params_uses_packaged_fangzheng_cartoon_for_emphasis(self):
         params = VideoParams(video_subject="婚姻")
 
-        self.assertEqual(params.emphasis_font_name, "SimHei.ttf")
+        self.assertEqual(params.emphasis_font_name, "FZKaTongJianTi.ttf")
         self.assertNotEqual(params.emphasis_font_name, params.font_name)
 
     def test_rejects_out_of_range_emphasis_sfx_volume(self):

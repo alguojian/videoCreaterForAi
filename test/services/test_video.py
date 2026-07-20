@@ -15,8 +15,10 @@ from moviepy import (
     ImageClip,
     VideoFileClip,
 )
+from moviepy.video.VideoClip import VideoClip
 import numpy as np
 import pytest
+from PIL import Image, ImageDraw
 
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -216,9 +218,30 @@ def test_render_scene_allocation_ffmpeg_builds_single_concat_filter(tmp_path):
     assert "trim=duration=2" in filter_graph
     assert "scale=1920:1080:force_original_aspect_ratio=decrease" in filter_graph
     assert "pad=1920:1080" in filter_graph
+    assert "fps=30" in filter_graph
     assert "concat=n=2:v=1:a=0" in filter_graph
     assert command[command.index("-c:v") + 1] == "h264_nvenc"
     assert command[command.index("-t") + 1] == "3.500"
+
+
+def test_fast_subtitle_filter_declares_original_video_size():
+    params = types.SimpleNamespace(
+        subtitle_position="bottom",
+        font_size=60,
+        text_fore_color="#FFFFFF",
+        stroke_color="#000000",
+        stroke_width=1.5,
+        video_aspect=VideoAspect.landscape,
+    )
+
+    subtitle_filter = vd._build_fast_subtitle_filter(
+        params,
+        "subtitle.srt",
+        "E:/videoCreaterForAi/resource/fonts/MicrosoftYaHeiBold.ttc",
+    )
+
+    assert "original_size=1920x1080" in subtitle_filter
+    assert "FontSize=16" in subtitle_filter
 
 
 def test_render_scene_allocation_honors_speed_and_exact_output_duration(tmp_path):
@@ -1026,10 +1049,126 @@ class TestVideoService(unittest.TestCase):
             for clip in clips:
                 clip.close()
 
+    def test_emphasis_layers_use_the_higher_safe_y_positions(self):
+        self.assertEqual(vd._EMPHASIS_LAYER_Y_RATIOS, (0.24, 0.39, 0.53))
+
+    def test_stamp_emphasis_remains_horizontally_aligned(self):
+        cue = EmphasisCue(
+            text="重点词",
+            start=1.0,
+            end=2.0,
+            color="#FF5A36",
+            animation="stamp",
+            sound_id="hit-01",
+            position="center",
+        )
+        font_path = str(Path(utils.font_dir()) / "STHeitiMedium.ttc")
+
+        with patch.object(
+            VideoClip,
+            "rotated",
+            side_effect=AssertionError("emphasis text must never be rotated"),
+        ):
+            clips = vd.create_emphasis_text_clips(
+                cues=[cue],
+                video_size=(1920, 1080),
+                font_path=font_path,
+                font_size=92,
+            )
+        try:
+            self.assertEqual(len(clips), 1)
+        finally:
+            for clip in clips:
+                clip.close()
+
     def test_resolve_emphasis_font_prefers_requested_project_font(self):
         path = vd.resolve_emphasis_font_path("SimHei.ttf", "婚姻二字")
 
         self.assertEqual(Path(path).name, "SimHei.ttf")
+
+    def test_resolve_emphasis_font_uses_packaged_fangzheng_cartoon_font(self):
+        path = vd.resolve_emphasis_font_path("FZKaTongJianTi.ttf", "婚姻二字")
+
+        self.assertEqual(Path(path).name, "FZKaTongJianTi.ttf")
+        self.assertTrue(Path(path).is_file())
+
+    def test_resolve_emphasis_font_uses_system_simkai_when_not_packaged(self):
+        system_simkai = Path(utils.font_dir()) / "SimHei.ttf"
+        with patch.object(
+            vd,
+            "_system_emphasis_font_path",
+            return_value=system_simkai,
+            create=True,
+        ):
+            path = vd.resolve_emphasis_font_path("SimKai.ttf", "婚姻二字")
+
+        self.assertEqual(Path(path), system_simkai)
+
+    def test_load_emphasis_font_uses_true_seven_hundred_variable_weight(self):
+        font = MagicMock()
+        font.get_variation_axes.return_value = [
+            {"minimum": 100, "default": 400, "maximum": 900, "name": b"Weight"}
+        ]
+        with patch.object(vd.ImageFont, "truetype", return_value=font):
+            loaded = vd._load_emphasis_font("NotoSansSC-VF.ttf", 96)
+
+        self.assertIs(loaded, font)
+        font.set_variation_by_axes.assert_called_once_with([700])
+
+    def test_emphasis_palette_keeps_the_random_fill_solid_and_shadow_black(self):
+        fill_top, fill_bottom, outline_top, outline_bottom = (
+            vd._emphasis_gradient_colors("#FF5A36")
+        )
+
+        self.assertEqual(fill_top, (255, 90, 54))
+        self.assertEqual(fill_bottom, fill_top)
+        self.assertEqual(outline_top, (0, 0, 0))
+        self.assertEqual(outline_bottom, (0, 0, 0))
+
+    def test_emphasis_soft_halo_is_translucent_and_fades_evenly_outward(self):
+        mask = Image.new("L", (81, 81), 0)
+        ImageDraw.Draw(mask).rectangle((32, 32, 48, 48), fill=255)
+
+        halo = vd._soft_emphasis_shadow_alpha(mask)
+
+        near_top = halo.getpixel((40, 28))
+        far_top = halo.getpixel((40, 20))
+        near_bottom = halo.getpixel((40, 52))
+        far_bottom = halo.getpixel((40, 60))
+        self.assertGreater(near_top, far_top)
+        self.assertGreater(far_top, 0)
+        self.assertAlmostEqual(near_top, near_bottom, delta=1)
+        self.assertAlmostEqual(far_top, far_bottom, delta=1)
+        self.assertLess(halo.getpixel((40, 20)), halo.getpixel((40, 24)))
+
+    def test_emphasis_shadow_matches_reference_drop_and_diffusion_profile(self):
+        mask = Image.new("L", (121, 41), 0)
+        ImageDraw.Draw(mask).rectangle((60, 0, 120, 40), fill=255)
+
+        shadow = vd._soft_emphasis_shadow_alpha(mask)
+
+        self.assertEqual(vd._EMPHASIS_SHADOW_OFFSET, (14, 10))
+        self.assertGreaterEqual(shadow.getpixel((59, 20)), 100)
+        self.assertLessEqual(shadow.getpixel((59, 20)), 120)
+        self.assertGreaterEqual(shadow.getpixel((53, 20)), 48)
+        self.assertLessEqual(shadow.getpixel((53, 20)), 62)
+        self.assertGreaterEqual(shadow.getpixel((47, 20)), 14)
+        self.assertLessEqual(shadow.getpixel((47, 20)), 24)
+
+    def test_rendered_emphasis_has_no_opaque_black_outline_ring(self):
+        font_path = str(Path(utils.font_dir()) / "FZKaTongJianTi.ttf")
+
+        rendered = vd._render_emphasis_text_image(
+            "重点词",
+            font_path=font_path,
+            font_size=136,
+            color="#FF5A36",
+        )
+
+        opaque_black = (
+            (rendered[..., :3] <= 5).all(axis=2) & (rendered[..., 3] >= 250)
+        )
+        self.assertFalse(opaque_black.any())
 
     def test_three_emphasis_layers_are_ordered_and_center_is_supported(self):
         cues = [

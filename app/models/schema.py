@@ -69,7 +69,7 @@ class VideoParams(BaseModel):
       "text_color": "#FFFFFF",
       "font_size": 60,
       "stroke_color": "#000000",
-      "stroke_width": 1.5
+      "stroke_width": 1.0
     }
     """
 
@@ -82,7 +82,7 @@ class VideoParams(BaseModel):
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     video_clip_speed: Optional[float] = 1.0
-    match_materials_to_script: bool = False
+    match_materials_to_script: bool = True
     video_count: Optional[int] = 1
 
     video_source: Optional[str] = "pexels"
@@ -93,23 +93,23 @@ class VideoParams(BaseModel):
     custom_audio_file: Optional[str] = None  # Custom audio file path, will ignore TTS and can still use Whisper subtitles
     video_language: Optional[str] = ""  # auto detect
 
-    voice_name: Optional[str] = ""
+    voice_name: Optional[str] = "local:default"
     voice_volume: Optional[float] = 1.0
     voice_rate: Optional[float] = 1.0
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
 
-    emphasis_enabled: bool = False
+    emphasis_enabled: bool = True
     emphasis_terms: str = Field(default="", max_length=500)
-    emphasis_font_name: str = Field(default="SimHei.ttf", max_length=255)
+    emphasis_font_name: str = Field(default="FZKaTongJianTi.ttf", max_length=255)
     emphasis_random_colors: bool = True
-    emphasis_random_animations: bool = True
+    emphasis_random_animations: bool = False
     emphasis_sfx_enabled: bool = True
     emphasis_sfx_volume: float = Field(default=0.5, ge=0.0, le=0.5)
 
     subtitle_enabled: Optional[bool] = True
-    subtitle_position: Optional[str] = config.ui.get("subtitle_position", "bottom")  # top, bottom, center, custom
+    subtitle_position: Optional[str] = "bottom"  # top, bottom, center, custom
     custom_position: float = config.ui.get("custom_position", 70.0)
     font_name: Optional[str] = "STHeitiMedium.ttc"
     text_fore_color: Optional[str] = "#FFFFFF"
@@ -118,7 +118,7 @@ class VideoParams(BaseModel):
 
     font_size: int = 60
     stroke_color: Optional[str] = "#000000"
-    stroke_width: float = 1.5
+    stroke_width: float = 1.0
     n_threads: Optional[int] = 2
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
@@ -134,7 +134,7 @@ class SubtitleRequest(BaseModel):
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
-    subtitle_position: Optional[str] = config.ui.get("subtitle_position", "bottom")
+    subtitle_position: Optional[str] = "bottom"
     font_name: Optional[str] = "STHeitiMedium.ttc"
     text_fore_color: Optional[str] = "#FFFFFF"
     text_background_color: Union[bool, str] = False

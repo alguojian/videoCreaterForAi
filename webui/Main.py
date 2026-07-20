@@ -97,7 +97,7 @@ DEFAULT_SUBTITLE_SETTINGS = {
     "text_fore_color": "#FFFFFF",
     "font_size": 60,
     "stroke_color": "#000000",
-    "stroke_width": 1.5,
+    "stroke_width": 1.0,
     "subtitle_background_enabled": False,
     "subtitle_background_color": "#000000",
     "rounded_subtitle_background": False,
@@ -243,7 +243,7 @@ def _initialize_session_state():
         "markdown_script_error": "",
         "markdown_script_hash": "",
         "match_materials_to_script": bool(
-            config.app.get("match_materials_to_script", False)
+            config.app.get("match_materials_to_script", True)
         ),
         "ui_language": initial_ui_language,
         # 已落盘的本地素材允许用户只修改文案后继续复用。
@@ -929,7 +929,7 @@ def _apply_pending_task_restore():
         params.get("video_aspect") or VideoAspect.landscape.value,
     )
     _set_stable_widget_value(
-        "video_clip_duration_select", params.get("video_clip_duration", 3)
+        "video_clip_duration_select", params.get("video_clip_duration", 5)
     )
     _set_stable_widget_value(
         "video_clip_speed_slider",
@@ -940,7 +940,7 @@ def _apply_pending_task_restore():
     )
     _set_stable_widget_value("video_count_select", params.get("video_count", 1))
     st.session_state["match_materials_to_script"] = bool(
-        params.get("match_materials_to_script", False)
+        params.get("match_materials_to_script", True)
     )
 
     # 音频设置。TTS server 未写入旧任务，根据历史 voice_name 推断。
@@ -979,7 +979,7 @@ def _apply_pending_task_restore():
     )
     st.session_state["stroke_color_picker"] = params.get("stroke_color") or "#000000"
     st.session_state["stroke_width_slider"] = min(
-        10.0, max(0.0, float(params.get("stroke_width", 1.5)))
+        10.0, max(0.0, float(params.get("stroke_width", 1.0)))
     )
     background_color = params.get("text_background_color")
     background_enabled = bool(background_color)
@@ -992,18 +992,14 @@ def _apply_pending_task_restore():
 
     # 重点词动效。旧任务没有这些字段时使用 VideoParams 的安全默认值。
     st.session_state["emphasis_enabled_checkbox"] = bool(
-        params.get("emphasis_enabled", False)
+        params.get("emphasis_enabled", True)
     )
     st.session_state["emphasis_terms_input"] = params.get("emphasis_terms") or ""
-    _set_stable_widget_value(
-        "emphasis_font_name_select",
-        params.get("emphasis_font_name") or "SimHei.ttf",
-    )
     st.session_state["emphasis_random_colors_checkbox"] = bool(
         params.get("emphasis_random_colors", True)
     )
     st.session_state["emphasis_random_animations_checkbox"] = bool(
-        params.get("emphasis_random_animations", True)
+        params.get("emphasis_random_animations", False)
     )
     st.session_state["emphasis_sfx_enabled_checkbox"] = bool(
         params.get("emphasis_sfx_enabled", True)
@@ -1898,7 +1894,7 @@ def _render_video_settings(panel, params):
             params.video_clip_duration = stable_selectbox(
                 tr("Clip Duration"),
                 options=[2, 3, 4, 5, 6, 7, 8, 9, 10],
-                default_value=3,
+                default_value=5,
                 key="video_clip_duration_select",
                 help=tr("Clip Duration Help"),
             )
@@ -2266,7 +2262,7 @@ def _render_audio_settings(panel, params):
 
             # 根据选择的TTS服务器获取声音列表
             filtered_voices = []
-            saved_voice_name = config.ui.get("voice_name", "")
+            saved_voice_name = config.ui.get("voice_name", "local:default") or "local:default"
 
             if not tts_mode_enabled:
                 # 上传音频和无配音模式不加载远程音色，减少无意义的网络请求和界面噪音。
@@ -2847,7 +2843,7 @@ def _render_emphasis_settings(panel, params):
     with panel:
         with st.container(border=True):
             st.write(tr("Emphasis Effects"))
-            st.session_state.setdefault("emphasis_enabled_checkbox", False)
+            st.session_state.setdefault("emphasis_enabled_checkbox", True)
             params.emphasis_enabled = st.checkbox(
                 tr("Enable Emphasis Effects"),
                 key="emphasis_enabled_checkbox",
@@ -2863,16 +2859,8 @@ def _render_emphasis_settings(panel, params):
                 disabled=disabled,
             )
 
-            emphasis_fonts = list(get_all_fonts())
-            if "SimHei.ttf" not in emphasis_fonts:
-                emphasis_fonts.insert(0, "SimHei.ttf")
-            params.emphasis_font_name = stable_selectbox(
-                tr("Emphasis Font"),
-                options=emphasis_fonts,
-                default_value="SimHei.ttf",
-                key="emphasis_font_name_select",
-                disabled=disabled,
-            )
+            params.emphasis_font_name = "FZKaTongJianTi.ttf"
+            st.caption(f"{tr('Emphasis Font')}: 项目内关键词专用字体")
 
             settings_columns = st.columns(2)
             with settings_columns[0]:
@@ -2884,7 +2872,7 @@ def _render_emphasis_settings(panel, params):
                 )
             with settings_columns[1]:
                 st.session_state.setdefault(
-                    "emphasis_random_animations_checkbox", True
+                    "emphasis_random_animations_checkbox", False
                 )
                 params.emphasis_random_animations = st.checkbox(
                     tr("Random Emphasis Animations"),

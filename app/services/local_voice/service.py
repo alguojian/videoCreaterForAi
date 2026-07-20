@@ -72,7 +72,7 @@ class LocalVoiceSettings:
     subtitle_provider: str = "qwen_forced_aligner"
     subtitle_min_duration_ms: int = 850
     subtitle_max_duration_ms: int = 4200
-    subtitle_max_chars: int = 14
+    subtitle_max_chars: int = 18
     subtitle_gap_ms: int = 40
     subtitle_fallback: str = "whisper"
 
@@ -108,7 +108,7 @@ class LocalVoiceSettings:
             subtitle_provider=str(values.get("subtitle_provider", "qwen_forced_aligner")),
             subtitle_min_duration_ms=int(values.get("subtitle_min_duration_ms", 850)),
             subtitle_max_duration_ms=int(values.get("subtitle_max_duration_ms", 4200)),
-            subtitle_max_chars=int(values.get("subtitle_max_chars", 14)),
+            subtitle_max_chars=int(values.get("subtitle_max_chars", 18)),
             subtitle_gap_ms=int(values.get("subtitle_gap_ms", 40)),
             subtitle_fallback=str(values.get("subtitle_fallback", "whisper")),
         )

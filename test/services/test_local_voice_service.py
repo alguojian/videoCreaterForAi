@@ -166,3 +166,16 @@ def test_settings_use_larger_default_blocks_without_overriding_explicit_value(
         {"block_max_chars": 100}, project_root=tmp_path
     )
     assert explicit.block_max_chars == 100
+
+
+def test_settings_default_to_eighteen_subtitle_characters_without_overriding_value(
+    tmp_path: Path,
+):
+    assert (
+        LocalVoiceSettings.from_mapping({}, project_root=tmp_path).subtitle_max_chars
+        == 18
+    )
+    explicit = LocalVoiceSettings.from_mapping(
+        {"subtitle_max_chars": 12}, project_root=tmp_path
+    )
+    assert explicit.subtitle_max_chars == 12

@@ -9,6 +9,17 @@ ROOT_DIR = Path(__file__).parent.parent.parent
 WEBUI_MAIN = ROOT_DIR / "webui" / "Main.py"
 
 
+def _module_literal(name: str):
+    tree = ast.parse(WEBUI_MAIN.read_text(encoding="utf-8"))
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+    )
+    return ast.literal_eval(assignment.value)
+
+
 def _function_source(name: str) -> str:
     source = WEBUI_MAIN.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -18,6 +29,41 @@ def _function_source(name: str) -> str:
         if isinstance(node, ast.FunctionDef) and node.name == name
     )
     return ast.get_source_segment(source, function) or ""
+
+
+def test_webui_uses_thin_default_subtitle_stroke():
+    assert _module_literal("DEFAULT_SUBTITLE_SETTINGS")["stroke_width"] == 1.0
+
+
+def test_webui_defaults_emphasis_effects_to_enabled():
+    restoration = _function_source("_apply_pending_task_restore")
+    rendering = _function_source("_render_emphasis_settings")
+
+    assert 'params.get("emphasis_enabled", True)' in restoration
+    assert 'setdefault("emphasis_enabled_checkbox", True)' in rendering
+
+
+def test_webui_defaults_to_automatic_local_voice_and_ordered_five_second_clips():
+    initialization = _function_source("_initialize_session_state")
+    restoration = _function_source("_apply_pending_task_restore")
+    video_settings = _function_source("_render_video_settings")
+    audio_settings = _function_source("_render_audio_settings")
+
+    assert 'config.app.get("match_materials_to_script", True)' in initialization
+    assert 'params.get("video_clip_duration", 5)' in restoration
+    assert 'params.get("match_materials_to_script", True)' in restoration
+    assert 'default_value=5' in video_settings
+    assert 'config.ui.get("voice_name", "local:default") or "local:default"' in audio_settings
+
+
+def test_webui_locks_emphasis_to_packaged_fangzheng_cartoon_and_fixed_pop_animation():
+    restoration = _function_source("_apply_pending_task_restore")
+    rendering = _function_source("_render_emphasis_settings")
+
+    assert 'emphasis_font_name_select' not in restoration
+    assert 'params.get("emphasis_random_animations", False)' in restoration
+    assert 'params.emphasis_font_name = "FZKaTongJianTi.ttf"' in rendering
+    assert '"emphasis_random_animations_checkbox", False' in rendering
 
 
 def test_apply_document_sets_content_without_generation_settings():

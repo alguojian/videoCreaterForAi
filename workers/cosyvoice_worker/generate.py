@@ -53,6 +53,22 @@ def _save_audio(output_path: Path, audio: Any, sample_rate: int) -> None:
     sf.write(str(output_path), array, sample_rate, subtype="PCM_16")
 
 
+def _concatenate_speech_chunks(chunks: list[dict[str, Any]]) -> Any:
+    """Join every chunk yielded for one synthesis request without a pause."""
+    parts = [chunk["tts_speech"] for chunk in chunks if chunk.get("tts_speech") is not None]
+    if not parts:
+        raise RuntimeError("CosyVoice returned chunks without speech data")
+    first = parts[0]
+    if hasattr(first, "detach"):
+        import torch
+
+        return torch.cat(parts, dim=-1)
+
+    import numpy as np
+
+    return np.concatenate([np.asarray(part) for part in parts], axis=-1)
+
+
 def _install_soundfile_audio_loader() -> None:
     """Avoid torchaudio 2.11's TorchCodec/FFmpeg DLL requirement on Windows."""
     try:
@@ -152,7 +168,11 @@ def run(request_path: Path) -> dict[str, Any]:
                     f"CosyVoice returned no audio chunks for block {block.get('block_id', '')}"
                 )
             block_output = Path(block["output_wav"]).expanduser().resolve()
-            _save_audio(block_output, generated[0]["tts_speech"], sample_rate)
+            _save_audio(
+                block_output,
+                _concatenate_speech_chunks(generated),
+                sample_rate,
+            )
             completed_blocks.append(
                 {"block_id": block.get("block_id", ""), "audio_file": str(block_output)}
             )

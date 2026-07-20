@@ -31,7 +31,7 @@ from moviepy import (
 )
 from moviepy.audio.AudioClip import AudioArrayClip
 from moviepy.video.tools.subtitles import SubtitlesClip
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from app.config import config
 from app.models import const
@@ -764,7 +764,7 @@ def _render_scene_allocation_with_ffmpeg(
             f"setpts=(PTS-STARTPTS)/{speed:.6f},"
             f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
             f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2,"
-            f"setsar=1[v{index}]"
+            f"setsar=1,fps=30[v{index}]"
         )
 
     inputs = "".join(f"[v{index}]" for index in range(len(allocations)))
@@ -1503,16 +1503,42 @@ def subtitle_font_supports_text(font_path: str, text: str) -> bool:
     return _subtitle_font_supports_sample(font_path, sample)
 
 
+_SYSTEM_EMPHASIS_FONTS = {
+    "simkai.ttf": "simkai.ttf",
+    "notosanssc-vf.ttf": "NotoSansSC-VF.ttf",
+}
+_EMPHASIS_FONT_WEIGHT = 700
+
+
+def _system_emphasis_font_path(font_name: str) -> Path | None:
+    if os.name != "nt":
+        return None
+    filename = _SYSTEM_EMPHASIS_FONTS.get(str(font_name).lower())
+    if not filename:
+        return None
+    candidate = Path(os.environ.get("WINDIR", r"C:\\Windows")) / "Fonts" / filename
+    return candidate if candidate.is_file() else None
+
+
 def resolve_emphasis_font_path(font_name: str, sample: str) -> str:
-    """Resolve a project-local emphasis font with a bundled glyph-safe fallback."""
-    requested = Path(utils.font_dir()) / (font_name or "SimHei.ttf")
+    """Resolve a configured emphasis font with glyph-safe project fallback."""
+    configured_name = font_name or "FZKaTongJianTi.ttf"
+    requested = Path(utils.font_dir()) / configured_name
     fallback = Path(utils.font_dir()) / "MicrosoftYaHeiBold.ttc"
-    selected = requested
-    if not requested.is_file() or not subtitle_font_supports_text(
-        str(requested), sample
-    ):
+    candidates = [requested]
+    system_font = _system_emphasis_font_path(configured_name)
+    if system_font is not None and system_font not in candidates:
+        candidates.append(system_font)
+    if fallback not in candidates:
+        candidates.append(fallback)
+
+    selected = fallback
+    for candidate in candidates:
+        if candidate.is_file() and subtitle_font_supports_text(str(candidate), sample):
+            selected = candidate
+            break
+    if selected == fallback and requested != fallback:
         logger.warning(f"emphasis font unavailable, using fallback: {requested}")
-        selected = fallback
     resolved = str(selected)
     return resolved.replace("\\", "/") if os.name == "nt" else resolved
 
@@ -1538,11 +1564,16 @@ def _ass_color(hex_color: str, default: str) -> str:
 
 def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> str:
     alignment = {"bottom": 2, "center": 5, "top": 8}[params.subtitle_position]
+    video_width, video_height = VideoAspect(params.video_aspect).to_resolution()
+    # The FFmpeg subtitles filter renders SRT through libass's 288px-high
+    # virtual canvas. Convert the UI's pixel font size so 60 means 60px on the
+    # selected output video instead of being scaled up again by libass.
+    ass_font_size = max(1, round(int(params.font_size) * 288 / video_height))
     font_name = Path(font_path).stem
     force_style = ",".join(
         [
             f"FontName={font_name}",
-            f"FontSize={int(params.font_size)}",
+            f"FontSize={ass_font_size}",
             f"PrimaryColour={_ass_color(params.text_fore_color, '#FFFFFF')}",
             f"OutlineColour={_ass_color(params.stroke_color, '#000000')}",
             f"Outline={max(0, int(round(float(params.stroke_width))))}",
@@ -1554,7 +1585,8 @@ def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> s
     fonts_dir = _escape_ffmpeg_filter_value(os.path.dirname(os.path.abspath(font_path)))
     return (
         "subtitles="
-        f"filename='{subtitle_file}':fontsdir='{fonts_dir}':"
+        f"filename='{subtitle_file}':original_size={video_width}x{video_height}:"
+        f"fontsdir='{fonts_dir}':"
         f"force_style='{_escape_ffmpeg_filter_value(force_style)}'"
     )
 
@@ -1715,18 +1747,82 @@ def _emphasis_scale(animation: str, current_time: float, duration: float) -> flo
 
 
 _EMPHASIS_SAFE_MARGIN = 40
+_EMPHASIS_LAYER_Y_RATIOS = (0.24, 0.39, 0.53)
 _EMPHASIS_MAX_ANIMATION_SCALE = 1.1
 _EMPHASIS_SFX_PEAK = 0.85
 _EMPHASIS_SHAKE_OFFSET = 18
-_EMPHASIS_TEXT_MARGIN = (8, 8)
-_EMPHASIS_STROKE_WIDTH = 3
+_EMPHASIS_TEXT_MARGIN = (52, 48)
+_EMPHASIS_STROKE_WIDTH = 0
+_EMPHASIS_SHADOW_OFFSET = (14, 10)
+_EMPHASIS_SHADOW_BLUR = 9
+_EMPHASIS_SHADOW_OPACITY = 230
+
+
+def _load_emphasis_font(font_path: str, font_size: int):
+    """Load an emphasis font and select a real 700 weight when available."""
+    font = ImageFont.truetype(font_path, font_size)
+    try:
+        axes = font.get_variation_axes()
+        values = []
+        has_weight_axis = False
+        for axis in axes:
+            value = axis["default"]
+            if axis["name"] in {b"Weight", "Weight"}:
+                value = max(axis["minimum"], min(_EMPHASIS_FONT_WEIGHT, axis["maximum"]))
+                has_weight_axis = True
+            values.append(value)
+        if has_weight_axis:
+            font.set_variation_by_axes(values)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        pass
+    return font
+
+
+def _emphasis_gradient_colors(
+    color: str,
+) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+    """Keep the cue's random face color solid and its shadow black."""
+    source = color.lstrip("#")
+    base = tuple(int(source[index : index + 2], 16) for index in (0, 2, 4))
+    fill_top = base
+    fill_bottom = base
+    outline_top = (0, 0, 0)
+    outline_bottom = (0, 0, 0)
+    return fill_top, fill_bottom, outline_top, outline_bottom
+
+
+def _soft_emphasis_shadow_alpha(mask: Image.Image) -> Image.Image:
+    """Create the reference-style directional shadow with one smooth falloff."""
+    blurred = mask.filter(ImageFilter.GaussianBlur(_EMPHASIS_SHADOW_BLUR))
+    return blurred.point(
+        lambda value: value * _EMPHASIS_SHADOW_OPACITY // 255
+    )
+
+
+def _vertical_gradient_layer(
+    size: tuple[int, int],
+    top: tuple[int, int, int],
+    bottom: tuple[int, int, int],
+    mask: Image.Image,
+) -> Image.Image:
+    width, height = size
+    progress = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, np.newaxis]
+    top_values = np.asarray(top, dtype=np.float32)
+    bottom_values = np.asarray(bottom, dtype=np.float32)
+    rgb = np.broadcast_to(
+        ((1.0 - progress[..., np.newaxis]) * top_values)
+        + (progress[..., np.newaxis] * bottom_values),
+        (height, width, 3),
+    ).astype(np.uint8)
+    alpha = np.asarray(mask, dtype=np.uint8)[..., np.newaxis]
+    return Image.fromarray(np.concatenate((rgb, alpha), axis=2))
 
 
 def _render_emphasis_text_image(
     text: str, font_path: str, font_size: int, color: str
 ) -> np.ndarray:
     """Draw a padded emphasis image without MoviePy's asymmetric label crop."""
-    font = ImageFont.truetype(font_path, font_size)
+    font = _load_emphasis_font(font_path, font_size)
     probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
     bbox = ImageDraw.Draw(probe).textbbox(
         (0, 0), text, font=font, stroke_width=_EMPHASIS_STROKE_WIDTH
@@ -1740,13 +1836,20 @@ def _render_emphasis_text_image(
         ),
         (0, 0, 0, 0),
     )
-    ImageDraw.Draw(image).text(
-        (margin_x - bbox[0], margin_y - bbox[1]),
-        text,
-        font=font,
-        fill=color,
-        stroke_width=_EMPHASIS_STROKE_WIDTH,
-        stroke_fill="#000000",
+    text_position = (margin_x - bbox[0], margin_y - bbox[1])
+    fill_mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(fill_mask).text(text_position, text, font=font, fill=255)
+    fill_top, fill_bottom, _, _ = _emphasis_gradient_colors(color)
+    shadow_mask = Image.new("L", image.size, 0)
+    shadow_mask.paste(
+        _soft_emphasis_shadow_alpha(fill_mask),
+        _EMPHASIS_SHADOW_OFFSET,
+    )
+    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    shadow.putalpha(shadow_mask)
+    image.alpha_composite(shadow)
+    image.alpha_composite(
+        _vertical_gradient_layer(image.size, fill_top, fill_bottom, fill_mask)
     )
     return np.asarray(image)
 
@@ -1790,22 +1893,12 @@ def create_emphasis_text_clips(
         )
         max_render_width = base_width * max_animation_scale
         max_render_height = base_height * max_animation_scale
-        if cue.animation == "stamp":
-            angle = np.deg2rad(5)
-            max_render_width = max_animation_scale * (
-                base_width * np.cos(angle) + base_height * np.sin(angle)
-            )
-            max_render_height = max_animation_scale * (
-                base_width * np.sin(angle) + base_height * np.cos(angle)
-            )
         if cue.animation in {"pop", "zoom", "stamp"}:
             clip = clip.resized(
                 lambda current_time, animation=cue.animation, cue_duration=duration: _emphasis_scale(
                     animation, current_time, cue_duration
                 )
             )
-        if cue.animation == "stamp":
-            clip = clip.rotated(-5)
 
         safe_left = _EMPHASIS_SAFE_MARGIN + shake_offset
         safe_right = video_width - _EMPHASIS_SAFE_MARGIN - shake_offset
@@ -1814,7 +1907,7 @@ def create_emphasis_text_clips(
             "center": 0.50,
             "right": 0.76,
         }[cue.position]
-        center_y_ratio = (0.28, 0.43, 0.57)[cue.layer]
+        center_y_ratio = _EMPHASIS_LAYER_Y_RATIOS[cue.layer]
         center_x = video_width * center_x_ratio
         base_x = min(
             max(safe_left, center_x - max_render_width / 2),
@@ -2156,7 +2249,7 @@ def generate_video(
         try:
             emphasis_cues = emphasis.load_emphasis_cues(emphasis_path)
             emphasis_font_path = resolve_emphasis_font_path(
-                getattr(params, "emphasis_font_name", "SimHei.ttf"),
+                getattr(params, "emphasis_font_name", "FZKaTongJianTi.ttf"),
                 "".join(cue.text for cue in emphasis_cues),
             )
             logger.info(f"  ⑦ emphasis font: {emphasis_font_path}")
@@ -2165,7 +2258,7 @@ def generate_video(
                     cues=emphasis_cues,
                     video_size=(video_width, video_height),
                     font_path=emphasis_font_path,
-                    font_size=max(int(params.font_size) + 24, 88),
+                    font_size=max(int(params.font_size) + 104, 164),
                 )
             )
         except Exception as exc:

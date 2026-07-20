@@ -45,10 +45,12 @@ _ANIMATION_SOUND_GROUPS = {
     "stamp": ("hit",),
 }
 EMPHASIS_POSITIONS = ("left", "center", "right")
+EMPHASIS_POSITION_WEIGHTS = (15, 70, 15)
 _DEFAULT_COLOR = "#FF5A36"
 _DEFAULT_ANIMATION = "pop"
 _MIN_DURATION = 0.45
 _MAX_DURATION = 1.35
+_SENTENCE_ENDINGS = frozenset("。！？!?；;")
 
 
 def _visible_text(value: str) -> str:
@@ -57,6 +59,20 @@ def _visible_text(value: str) -> str:
         for char in str(value or "")
         if not char.isspace() and not unicodedata.category(char).startswith("P")
     )
+
+
+def _sentence_end_visible_index(value: str, term_start_index: int) -> int:
+    """Return the visible-character offset at the end of the term's sentence."""
+    visible_index = 0
+    for char in str(value or ""):
+        if char.isspace():
+            continue
+        if unicodedata.category(char).startswith("P"):
+            if char in _SENTENCE_ENDINGS and visible_index > term_start_index:
+                return visible_index
+            continue
+        visible_index += 1
+    return visible_index
 
 
 def _timestamp_to_seconds(value: str) -> float:
@@ -235,7 +251,11 @@ def _style_for(
     )
     group = selector.choice(_ANIMATION_SOUND_GROUPS[animation])
     sound_id = selector.choice(_SOUND_IDS_BY_GROUP[group])
-    position = selector.choice(EMPHASIS_POSITIONS)
+    position = selector.choices(
+        EMPHASIS_POSITIONS,
+        weights=EMPHASIS_POSITION_WEIGHTS,
+        k=1,
+    )[0]
     return color, animation, sound_id, position
 
 
@@ -257,7 +277,8 @@ def _cue_for_term(
     cue_start, cue_end = parse_srt_time_range(time_range)
     ratio = (cue_end - cue_start) / len(visible_subtitle)
     start = cue_start + start_index * ratio
-    end = cue_end
+    sentence_end_index = _sentence_end_visible_index(subtitle_text, start_index)
+    end = cue_start + sentence_end_index * ratio
     if end <= start:
         return None
     color, animation, sound_id, position = _style_for(
@@ -294,16 +315,14 @@ def _arrange_grouped_cues(
     arranged: list[EmphasisCue] = []
     for group_key, group in grouped.items():
         ordered = sorted(group, key=lambda item: (item.start, item.text))
-        positions = list(EMPHASIS_POSITIONS)
-        random.Random(f"{task_id}:{group_key[1]}:positions").shuffle(positions)
         layer_entries: dict[int, int] = {}
         for order, cue in enumerate(ordered):
-            layer = order % len(positions)
+            layer = order % len(EMPHASIS_POSITIONS)
             if layer in layer_entries:
                 previous_index = layer_entries[layer]
                 previous = arranged[previous_index]
                 arranged[previous_index] = replace(previous, end=cue.start)
-            arranged.append(replace(cue, layer=layer, position=positions[layer]))
+            arranged.append(replace(cue, layer=layer))
             layer_entries[layer] = len(arranged) - 1
 
     return sorted(arranged, key=lambda item: (item.start, item.layer, item.text))
@@ -345,7 +364,9 @@ def build_markdown_emphasis_cues(
                 EmphasisCue(
                     text=visible_term,
                     start=row.start + start_index * seconds_per_character,
-                    end=row.end,
+                    end=row.start
+                    + _sentence_end_visible_index(row.text, start_index)
+                    * seconds_per_character,
                     color=color,
                     animation=animation,
                     sound_id=sound_id,

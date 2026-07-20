@@ -116,3 +116,67 @@ def test_worker_loads_model_once_for_batched_blocks(monkeypatch, tmp_path: Path)
     assert result["blocks_completed"] == 2
     assert calls == ["model", "第一句", "第二句"]
     assert all(path.is_file() for path in output_paths)
+
+
+def test_worker_concatenates_every_chunk_from_a_single_inference(monkeypatch, tmp_path: Path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"reference")
+    output_path = tmp_path / "speech.wav"
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "model_dir": str(model_dir),
+                "reference_audio": str(reference),
+                "reference_text": "参考文本",
+                "cosyvoice_repo": "",
+                "use_rl_model": False,
+                "result_file": str(tmp_path / "result.json"),
+                "blocks": [
+                    {
+                        "block_id": "001",
+                        "spoken_text": "一段较长的口播",
+                        "output_wav": str(output_path),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeCosyVoice:
+        sample_rate = 24000
+
+        def inference_zero_shot(self, text, prompt, reference_audio, stream=False):
+            return [
+                {"tts_speech": np.zeros(240, dtype=np.float32)},
+                {"tts_speech": np.ones(480, dtype=np.float32)},
+            ]
+
+    class FakeAutoModel:
+        def __new__(cls, **kwargs):
+            return FakeCosyVoice()
+
+    cosyvoice_package = types.ModuleType("cosyvoice")
+    cosyvoice_cli = types.ModuleType("cosyvoice.cli")
+    cosyvoice_module = types.ModuleType("cosyvoice.cli.cosyvoice")
+    cosyvoice_module.AutoModel = FakeAutoModel
+    monkeypatch.setitem(sys.modules, "cosyvoice", cosyvoice_package)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli", cosyvoice_cli)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli.cosyvoice", cosyvoice_module)
+    monkeypatch.setattr(cosyvoice_worker, "_install_soundfile_audio_loader", lambda: None)
+    monkeypatch.setattr(
+        cosyvoice_worker,
+        "_save_audio",
+        lambda path, audio, sample_rate: captured.update(audio=np.asarray(audio)),
+    )
+
+    cosyvoice_worker.run(request_path)
+
+    assert captured["audio"].shape == (720,)
+    assert np.all(captured["audio"][:240] == 0)
+    assert np.all(captured["audio"][240:] == 1)
