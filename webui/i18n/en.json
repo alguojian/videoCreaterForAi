@@ -22,8 +22,6 @@
     "Markdown Search Terms": "Material Search Terms",
     "Markdown Scene Search Help": "Enter material search terms only on the first row of each scene. Leave following rows blank to reuse that scene instead of searching for every sentence.",
     "Emphasis Position": "Emphasis Position",
-    "Emphasis Term": "Emphasis Term",
-    "Emphasis Position Help": "Choose a display position for each emphasis term. The default is centered.",
     "Markdown Emphasis Edit Error": "Emphasis edit error",
     "Markdown Requires Online Material Source": "Markdown scripts require Pexels, Pixabay, or Coverr. Local materials are not supported.",
     "Row": "Row",

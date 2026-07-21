@@ -128,7 +128,10 @@ def test_webui_renders_markdown_upload_preview_and_generation_guards():
     assert "st.data_editor" in script_settings
     assert "SelectboxColumn" in script_settings
     assert 'key="markdown_script_editor"' in script_settings
-    assert 'key="markdown_emphasis_position_editor"' in script_settings
+    assert "position_label: st.column_config.SelectboxColumn" in script_settings
+    assert "for term_index, term in enumerate(row.emphasis_terms or (\"\",))" in script_settings
+    assert "script_label: row.text if term_index == 0 else \"\"" in script_settings
+    assert "NumberColumn(width=20)" in script_settings
     assert "disabled=markdown_import_active" not in script_settings
     assert "uploaded_markdown is None" in script_settings
     assert "markdown_script_hash" in script_settings
@@ -149,8 +152,6 @@ def test_markdown_preview_dataframe_columns_use_localized_labels():
         "Manual Emphasis Terms",
         "Markdown Search Terms",
         "Emphasis Position",
-        "Emphasis Term",
-        "Emphasis Position Help",
         "Scene",
         "Rows",
         "Markdown Scene Search Terms",

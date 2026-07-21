@@ -892,8 +892,6 @@ def _clear_markdown_import_state():
         "markdown_script_edit_error",
         "markdown_script_hash",
         "markdown_script_editor",
-        "markdown_emphasis_position_editor",
-        "markdown_emphasis_position_signature",
     ):
         st.session_state.pop(key, None)
     st.session_state.pop("markdown_script_uploader", None)
@@ -941,8 +939,6 @@ def _apply_pending_task_restore():
     # 上一次上传的文件在本轮 rerun 中覆盖刚恢复的文档。
     st.session_state.pop("markdown_script_uploader", None)
     st.session_state.pop("markdown_script_editor", None)
-    st.session_state.pop("markdown_emphasis_position_editor", None)
-    st.session_state.pop("markdown_emphasis_position_signature", None)
     # 视频设置。素材上传控件不能由服务端写入，因此本地素材需要用户重新选择。
     video_source = params.get("video_source") or "pexels"
     _set_stable_widget_value("video_source_select", video_source)
@@ -1762,8 +1758,6 @@ def _render_script_settings(panel, params):
                         st.session_state["markdown_script_error"] = ""
                         st.session_state["markdown_script_edit_error"] = ""
                         st.session_state.pop("markdown_script_editor", None)
-                        st.session_state.pop("markdown_emphasis_position_editor", None)
-                        st.session_state.pop("markdown_emphasis_position_signature", None)
 
             markdown_document = None
             serialized_document = st.session_state.get("markdown_script_document")
@@ -1795,7 +1789,7 @@ def _render_script_settings(panel, params):
                 emphasis_label = tr("Manual Emphasis Terms")
                 search_label = tr("Markdown Search Terms")
                 position_label = tr("Emphasis Position")
-                emphasis_term_label = tr("Emphasis Term")
+                source_row_key = "_source_row_number"
                 position_options = ("left", "center", "right")
                 position_labels = {
                     "left": tr("Left"),
@@ -1804,12 +1798,21 @@ def _render_script_settings(panel, params):
                 }
                 document_rows = [
                     {
-                        row_label: row.number,
-                        script_label: row.text,
-                        emphasis_label: "；".join(row.emphasis_terms),
-                        search_label: "；".join(row.material_search_terms),
+                        source_row_key: row.number,
+                        row_label: row.number if term_index == 0 else None,
+                        script_label: row.text if term_index == 0 else "",
+                        emphasis_label: term,
+                        position_label: row.emphasis_positions.get(term, "center"),
+                        search_label: (
+                            "；".join(row.material_search_terms)
+                            if term_index == 0
+                            else ""
+                        ),
                     }
                     for row in markdown_document.rows
+                    # 一个重点词一行；首项显示文案和素材词，后续重点词保持
+                    # 同一组关系但不重复文案，便于阅读和选择位置。
+                    for term_index, term in enumerate(row.emphasis_terms or ("",))
                 ]
                 edited_table = st.data_editor(
                     document_rows,
@@ -1825,30 +1828,47 @@ def _render_script_settings(panel, params):
                             script_label,
                             search_label,
                             emphasis_label,
+                            position_label,
                         ]
                     ),
                     column_config={
-                        row_label: st.column_config.NumberColumn(width="small"),
+                        source_row_key: None,
+                        row_label: st.column_config.NumberColumn(width=20),
                         script_label: st.column_config.TextColumn(width="large"),
                         emphasis_label: st.column_config.TextColumn(
                             help=tr("Manual Emphasis Terms Help"),
                             width="medium",
                         ),
+                        position_label: st.column_config.SelectboxColumn(
+                            options=position_options,
+                            default="center",
+                            required=True,
+                            format_func=lambda value: position_labels.get(
+                                value, value
+                            ),
+                            width="small",
+                        ),
                         search_label: st.column_config.TextColumn(width="medium"),
                     },
                 )
                 edited_records = _markdown_editor_records(edited_table)
-                edited_rows = []
                 edit_errors = []
-                for row_index, row in enumerate(markdown_document.rows):
-                    record = (
-                        edited_records[row_index]
-                        if row_index < len(edited_records)
-                        else {}
-                    )
-                    emphasis_terms = _parse_markdown_emphasis_input(
-                        record.get(emphasis_label, "")
-                    )
+                terms_by_row = {row.number: [] for row in markdown_document.rows}
+                positions_by_row_terms = {}
+                for record in edited_records:
+                    row_number = int(record.get(source_row_key))
+                    term = str(record.get(emphasis_label, "")).strip()
+                    position = record.get(position_label, "center")
+                    if position not in position_options:
+                        edit_errors.append(f"第 {row_number} 行重点词“{term}”位置无效")
+                        position = "center"
+                    if term:
+                        terms_by_row.setdefault(row_number, []).append(term)
+                        positions_by_row_terms.setdefault(row_number, {})[term] = position
+
+                edited_rows = []
+                for row in markdown_document.rows:
+                    emphasis_terms = list(dict.fromkeys(terms_by_row.get(row.number, [])))
                     normalized_text = script_document.visible_text(row.text)
                     for term in emphasis_terms:
                         normalized_term = script_document.visible_text(term)
@@ -1874,83 +1894,6 @@ def _render_script_settings(panel, params):
 
                 markdown_document = markdown_document.model_copy(
                     update={"rows": edited_rows}
-                )
-                position_signature = tuple(
-                    (row.number, tuple(row.emphasis_terms))
-                    for row in markdown_document.rows
-                )
-                if (
-                    st.session_state.get("markdown_emphasis_position_signature")
-                    != position_signature
-                ):
-                    st.session_state["markdown_emphasis_position_signature"] = (
-                        position_signature
-                    )
-                    st.session_state.pop("markdown_emphasis_position_editor", None)
-
-                emphasis_position_rows = [
-                    {
-                        row_label: row.number,
-                        emphasis_term_label: term,
-                        position_label: row.emphasis_positions.get(term, "center"),
-                    }
-                    for row in markdown_document.rows
-                    for term in row.emphasis_terms
-                ]
-                st.caption(tr("Emphasis Position Help"))
-                edited_positions = st.data_editor(
-                    emphasis_position_rows,
-                    hide_index=True,
-                    use_container_width=True,
-                    num_rows="fixed",
-                    key="markdown_emphasis_position_editor",
-                    disabled=(
-                        [row_label, emphasis_term_label]
-                        if params.emphasis_enabled
-                        else [row_label, emphasis_term_label, position_label]
-                    ),
-                    column_config={
-                        row_label: st.column_config.NumberColumn(width="small"),
-                        emphasis_term_label: st.column_config.TextColumn(width="medium"),
-                        position_label: st.column_config.SelectboxColumn(
-                            options=position_options,
-                            default="center",
-                            required=True,
-                            format_func=lambda value: position_labels.get(
-                                value, value
-                            ),
-                            width="small",
-                        ),
-                    },
-                )
-                positions_by_row_terms = {}
-                for record in _markdown_editor_records(edited_positions):
-                    row_number = record.get(row_label)
-                    term = str(record.get(emphasis_term_label, "")).strip()
-                    position = record.get(position_label, "center")
-                    if position not in position_options:
-                        edit_errors.append(f"第 {row_number} 行重点词“{term}”位置无效")
-                        position = "center"
-                    if row_number and term:
-                        positions_by_row_terms.setdefault(int(row_number), {})[term] = (
-                            position
-                        )
-                markdown_document = markdown_document.model_copy(
-                    update={
-                        "rows": [
-                            row.model_copy(
-                                update={
-                                    "emphasis_positions": {
-                                        term: positions_by_row_terms.get(
-                                            row.number, {}
-                                        ).get(term, "center")
-                                        for term in row.emphasis_terms
-                                    }
-                                }
-                            )
-                            for row in markdown_document.rows
-                        ]
-                    }
                 )
                 st.session_state["markdown_script_document"] = (
                     markdown_document.model_dump(mode="json")
