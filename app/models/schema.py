@@ -119,7 +119,9 @@ class VideoParams(BaseModel):
     font_size: int = 60
     stroke_color: Optional[str] = "#000000"
     stroke_width: float = 1.0
-    n_threads: Optional[int] = 2
+    # MoviePy is only retained as a compatibility fallback.  The FFmpeg render
+    # path can safely use more CPU workers for decode, filtering, and muxing.
+    n_threads: Optional[int] = 8
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)

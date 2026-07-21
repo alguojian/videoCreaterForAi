@@ -26,8 +26,6 @@ def choose_video_codec(
 def is_fast_subtitle_path_supported(params, subtitle_path: str | None) -> bool:
     if not subtitle_path or not getattr(params, "subtitle_enabled", False):
         return False
-    if getattr(params, "emphasis_enabled", False):
-        return False
     if getattr(params, "text_background_color", False):
         return False
     if getattr(params, "rounded_subtitle_background", False):

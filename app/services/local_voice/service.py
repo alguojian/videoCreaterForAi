@@ -143,7 +143,11 @@ class LocalVoiceService:
 
     def _profile(self, voice_name: str):
         profile_id = voice_name.split(":", 1)[1] if voice_name.startswith("local:") else ""
-        profile_id = profile_id or self.settings.default_voice_profile
+        # `local:default` is the stable UI/API name for the configured default
+        # profile.  Without this explicit mapping it would always fall back to
+        # CosyVoice's bundled reference, even when a custom default exists.
+        if profile_id in {"", "default"}:
+            profile_id = self.settings.default_voice_profile or profile_id
         if profile_id in {"", "default"}:
             reference = self.settings.cosyvoice_repo / "asset" / "zero_shot_prompt.wav"
             if not reference.is_file():

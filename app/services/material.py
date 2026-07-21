@@ -375,6 +375,60 @@ def _search_function(source: str):
     return functions[source]
 
 
+_MATERIAL_QUERY_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "ai coding agent": ("coding", "software", "technology"),
+    "software agent": ("software", "technology", "computer"),
+    "code review": ("coding", "software development", "programming"),
+    "ai model switching": (
+        "artificial intelligence",
+        "ai technology",
+        "technology",
+        "computer",
+    ),
+    "app development": (
+        "software development",
+        "coding",
+        "software",
+        "technology",
+    ),
+    "software team": ("teamwork", "business team", "office team"),
+}
+
+
+def _fallback_search_terms(search_term: str) -> tuple[str, ...]:
+    """Return broader terms to use after the authored query is unavailable."""
+    normalized = " ".join(str(search_term or "").strip().lower().split())
+    if not normalized:
+        return ()
+
+    fallbacks: list[str] = list(_MATERIAL_QUERY_FALLBACKS.get(normalized, ()))
+    tokens = set(normalized.split())
+    if tokens & {"app", "application", "mobile"} and tokens & {
+        "development",
+        "developing",
+        "developer",
+    }:
+        fallbacks.extend(("software development", "coding", "technology"))
+    elif tokens & {"ai", "artificial", "intelligence", "model", "models", "agent", "agents"}:
+        fallbacks.extend(("artificial intelligence", "technology", "computer"))
+    elif tokens & {"code", "coding", "programming", "developer", "development"}:
+        fallbacks.extend(("coding", "software", "technology"))
+    elif tokens & {"team", "teams", "meeting", "office", "business"}:
+        fallbacks.extend(("teamwork", "business", "office"))
+
+    if not fallbacks and len(tokens) > 1:
+        fallbacks.extend((sorted(tokens)[-1], "technology"))
+
+    seen = {normalized}
+    unique: list[str] = []
+    for term in fallbacks:
+        normalized_term = " ".join(str(term).strip().lower().split())
+        if normalized_term and normalized_term not in seen:
+            seen.add(normalized_term)
+            unique.append(normalized_term)
+    return tuple(unique)
+
+
 def _scene_material_directory(task_id: str) -> str:
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":
@@ -492,7 +546,18 @@ def download_scene_materials(
         covered_duration = 0.0
         video_paths: list[str] = []
 
+        search_attempts: list[str] = list(scene.search_terms)
         for search_term in scene.search_terms:
+            for fallback_term in _fallback_search_terms(search_term):
+                if fallback_term not in search_attempts:
+                    search_attempts.append(fallback_term)
+
+        for search_term in search_attempts:
+            if search_term not in scene.search_terms:
+                logger.warning(
+                    f"scene {scene.index} primary material query unavailable; "
+                    f"trying fallback query '{search_term}'"
+                )
             candidates = search_videos(
                 search_term=search_term,
                 minimum_duration=minimum_duration,
@@ -553,7 +618,7 @@ def download_scene_materials(
                 break
 
         if covered_duration < required_duration:
-            attempted_terms = "；".join(scene.search_terms)
+            attempted_terms = "；".join(search_attempts)
             raise SceneMaterialError(
                 f"场景 {scene.index} 素材搜索失败：{attempted_terms}；"
                 f"对应文案：第 {scene.first_row}～{scene.last_row} 行"

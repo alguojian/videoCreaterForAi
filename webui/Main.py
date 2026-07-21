@@ -241,6 +241,7 @@ def _initialize_session_state():
         "video_terms": "",
         "markdown_script_document": None,
         "markdown_script_error": "",
+        "markdown_script_edit_error": "",
         "markdown_script_hash": "",
         "match_materials_to_script": bool(
             config.app.get("match_materials_to_script", True)
@@ -888,10 +889,34 @@ def _clear_markdown_import_state():
     for key in (
         "markdown_script_document",
         "markdown_script_error",
+        "markdown_script_edit_error",
         "markdown_script_hash",
+        "markdown_script_editor",
+        "markdown_emphasis_position_editor",
+        "markdown_emphasis_position_signature",
     ):
         st.session_state.pop(key, None)
     st.session_state.pop("markdown_script_uploader", None)
+
+
+def _parse_markdown_emphasis_input(value):
+    """把表格里的重点词输入框转换为去重后的重点词列表。"""
+    return list(
+        dict.fromkeys(
+            term.strip()
+            for term in re.split(r"[；;]", str(value or ""))
+            if term.strip()
+        )
+    )
+
+
+def _markdown_editor_records(data):
+    """兼容 Streamlit data_editor 返回的 DataFrame 和记录列表。"""
+    if hasattr(data, "to_dict"):
+        return data.to_dict("records")
+    if isinstance(data, Mapping):
+        return [data]
+    return list(data or [])
 
 
 def _apply_pending_task_restore():
@@ -910,10 +935,14 @@ def _apply_pending_task_restore():
     st.session_state["video_terms"] = str(video_terms)
     st.session_state["markdown_script_document"] = params.get("markdown_script")
     st.session_state["markdown_script_error"] = ""
+    st.session_state["markdown_script_edit_error"] = ""
     st.session_state["markdown_script_hash"] = ""
     # 任务历史只恢复序列化文档，不回填浏览器上传控件；清掉旧控件值，避免
     # 上一次上传的文件在本轮 rerun 中覆盖刚恢复的文档。
     st.session_state.pop("markdown_script_uploader", None)
+    st.session_state.pop("markdown_script_editor", None)
+    st.session_state.pop("markdown_emphasis_position_editor", None)
+    st.session_state.pop("markdown_emphasis_position_signature", None)
     # 视频设置。素材上传控件不能由服务端写入，因此本地素材需要用户重新选择。
     video_source = params.get("video_source") or "pexels"
     _set_stable_widget_value("video_source_select", video_source)
@@ -994,7 +1023,6 @@ def _apply_pending_task_restore():
     st.session_state["emphasis_enabled_checkbox"] = bool(
         params.get("emphasis_enabled", True)
     )
-    st.session_state["emphasis_terms_input"] = params.get("emphasis_terms") or ""
     st.session_state["emphasis_random_colors_checkbox"] = bool(
         params.get("emphasis_random_colors", True)
     )
@@ -1330,6 +1358,17 @@ def remove_logger_handler_safely(handler_id):
         # 已经被其它初始化流程移除。这里忽略缺失 handler，避免生成成功后
         # 因清理日志监听器失败而把页面打成异常。
         logger.debug(f"log handler already removed: {handler_id}")
+
+
+def _remember_generation_log(records, message: str) -> bool:
+    """Keep one copy when a stale Streamlit log handler repeats an event."""
+    rendered = str(message).rstrip()
+    if not rendered or (records and records[-1] == rendered):
+        return False
+    records.append(rendered)
+    if len(records) > 1000:
+        del records[:-1000]
+    return True
 
 
 def get_tts_provider_tips(provider_id):
@@ -1692,8 +1731,17 @@ def _render_script_settings(panel, params):
                 type=["md"],
                 help=tr("Markdown Script Help"),
                 key="markdown_script_uploader",
-                disabled=markdown_import_active,
             )
+            # Streamlit 的上传控件在点击文件卡片上的删除按钮后会返回 None。
+            # 只有真正通过浏览器上传的稿件带有 hash；历史任务恢复的稿件 hash 为空，
+            # 不能因为当前没有上传控件文件就把它误清掉。
+            if (
+                uploaded_markdown is None
+                and markdown_import_active
+                and st.session_state.get("markdown_script_hash")
+            ):
+                _clear_markdown_import_state()
+                markdown_import_active = False
             if uploaded_markdown is not None:
                 markdown_payload = uploaded_markdown.getvalue()
                 markdown_hash = hashlib.sha256(markdown_payload).hexdigest()
@@ -1712,6 +1760,10 @@ def _render_script_settings(panel, params):
                             document.model_dump(mode="json")
                         )
                         st.session_state["markdown_script_error"] = ""
+                        st.session_state["markdown_script_edit_error"] = ""
+                        st.session_state.pop("markdown_script_editor", None)
+                        st.session_state.pop("markdown_emphasis_position_editor", None)
+                        st.session_state.pop("markdown_emphasis_position_signature", None)
 
             markdown_document = None
             serialized_document = st.session_state.get("markdown_script_document")
@@ -1728,12 +1780,8 @@ def _render_script_settings(panel, params):
 
             markdown_import_active = markdown_document is not None
             if markdown_import_active:
-                script_document.apply_to_video_params(markdown_document, params)
-                st.session_state["video_subject"] = params.video_subject
-                st.session_state["video_script"] = params.video_script
-                st.session_state["video_terms"] = ", ".join(params.video_terms)
-
                 st.write(tr("Markdown Parse Preview"))
+                st.caption(tr("Markdown Scene Search Help"))
                 title_metric, row_metric, scene_metric = st.columns(3)
                 scenes = script_document.build_scenes(markdown_document)
                 title_metric.metric(tr("Markdown Video Title"), markdown_document.title)
@@ -1742,14 +1790,179 @@ def _render_script_settings(panel, params):
                 for warning in markdown_document.warnings:
                     st.warning(warning)
 
+                row_label = tr("Row")
+                script_label = tr("Video Script")
+                emphasis_label = tr("Manual Emphasis Terms")
+                search_label = tr("Markdown Search Terms")
+                position_label = tr("Emphasis Position")
+                emphasis_term_label = tr("Emphasis Term")
+                position_options = ("left", "center", "right")
+                position_labels = {
+                    "left": tr("Left"),
+                    "center": tr("Center"),
+                    "right": tr("Right"),
+                }
                 document_rows = [
                     {
-                        tr("Row"): row.number,
-                        tr("Video Script"): row.text,
-                        tr("Manual Emphasis Terms"): "；".join(row.emphasis_terms),
+                        row_label: row.number,
+                        script_label: row.text,
+                        emphasis_label: "；".join(row.emphasis_terms),
+                        search_label: "；".join(row.material_search_terms),
                     }
                     for row in markdown_document.rows
                 ]
+                edited_table = st.data_editor(
+                    document_rows,
+                    hide_index=True,
+                    use_container_width=True,
+                    num_rows="fixed",
+                    key="markdown_script_editor",
+                    disabled=(
+                        [row_label, script_label, search_label]
+                        if params.emphasis_enabled
+                        else [
+                            row_label,
+                            script_label,
+                            search_label,
+                            emphasis_label,
+                        ]
+                    ),
+                    column_config={
+                        row_label: st.column_config.NumberColumn(width="small"),
+                        script_label: st.column_config.TextColumn(width="large"),
+                        emphasis_label: st.column_config.TextColumn(
+                            help=tr("Manual Emphasis Terms Help"),
+                            width="medium",
+                        ),
+                        search_label: st.column_config.TextColumn(width="medium"),
+                    },
+                )
+                edited_records = _markdown_editor_records(edited_table)
+                edited_rows = []
+                edit_errors = []
+                for row_index, row in enumerate(markdown_document.rows):
+                    record = (
+                        edited_records[row_index]
+                        if row_index < len(edited_records)
+                        else {}
+                    )
+                    emphasis_terms = _parse_markdown_emphasis_input(
+                        record.get(emphasis_label, "")
+                    )
+                    normalized_text = script_document.visible_text(row.text)
+                    for term in emphasis_terms:
+                        normalized_term = script_document.visible_text(term)
+                        if len(normalized_term) < 2:
+                            edit_errors.append(
+                                f"第 {row.number} 行重点词“{term}”至少包含 2 个可见字符"
+                            )
+                        elif normalized_term not in normalized_text:
+                            edit_errors.append(
+                                f"第 {row.number} 行重点词“{term}”不在口播文案中"
+                            )
+                    edited_rows.append(
+                        row.model_copy(
+                            update={
+                                "emphasis_terms": emphasis_terms,
+                                "emphasis_positions": {
+                                    term: row.emphasis_positions.get(term, "center")
+                                    for term in emphasis_terms
+                                },
+                            }
+                        )
+                    )
+
+                markdown_document = markdown_document.model_copy(
+                    update={"rows": edited_rows}
+                )
+                position_signature = tuple(
+                    (row.number, tuple(row.emphasis_terms))
+                    for row in markdown_document.rows
+                )
+                if (
+                    st.session_state.get("markdown_emphasis_position_signature")
+                    != position_signature
+                ):
+                    st.session_state["markdown_emphasis_position_signature"] = (
+                        position_signature
+                    )
+                    st.session_state.pop("markdown_emphasis_position_editor", None)
+
+                emphasis_position_rows = [
+                    {
+                        row_label: row.number,
+                        emphasis_term_label: term,
+                        position_label: row.emphasis_positions.get(term, "center"),
+                    }
+                    for row in markdown_document.rows
+                    for term in row.emphasis_terms
+                ]
+                st.caption(tr("Emphasis Position Help"))
+                edited_positions = st.data_editor(
+                    emphasis_position_rows,
+                    hide_index=True,
+                    use_container_width=True,
+                    num_rows="fixed",
+                    key="markdown_emphasis_position_editor",
+                    disabled=(
+                        [row_label, emphasis_term_label]
+                        if params.emphasis_enabled
+                        else [row_label, emphasis_term_label, position_label]
+                    ),
+                    column_config={
+                        row_label: st.column_config.NumberColumn(width="small"),
+                        emphasis_term_label: st.column_config.TextColumn(width="medium"),
+                        position_label: st.column_config.SelectboxColumn(
+                            options=position_options,
+                            default="center",
+                            required=True,
+                            format_func=lambda value: position_labels.get(
+                                value, value
+                            ),
+                            width="small",
+                        ),
+                    },
+                )
+                positions_by_row_terms = {}
+                for record in _markdown_editor_records(edited_positions):
+                    row_number = record.get(row_label)
+                    term = str(record.get(emphasis_term_label, "")).strip()
+                    position = record.get(position_label, "center")
+                    if position not in position_options:
+                        edit_errors.append(f"第 {row_number} 行重点词“{term}”位置无效")
+                        position = "center"
+                    if row_number and term:
+                        positions_by_row_terms.setdefault(int(row_number), {})[term] = (
+                            position
+                        )
+                markdown_document = markdown_document.model_copy(
+                    update={
+                        "rows": [
+                            row.model_copy(
+                                update={
+                                    "emphasis_positions": {
+                                        term: positions_by_row_terms.get(
+                                            row.number, {}
+                                        ).get(term, "center")
+                                        for term in row.emphasis_terms
+                                    }
+                                }
+                            )
+                            for row in markdown_document.rows
+                        ]
+                    }
+                )
+                st.session_state["markdown_script_document"] = (
+                    markdown_document.model_dump(mode="json")
+                )
+                st.session_state["markdown_script_edit_error"] = "；".join(
+                    dict.fromkeys(edit_errors)
+                )
+                script_document.apply_to_video_params(markdown_document, params)
+                st.session_state["video_subject"] = params.video_subject
+                st.session_state["video_script"] = params.video_script
+                st.session_state["video_terms"] = ", ".join(params.video_terms)
+
                 scene_rows = [
                     {
                         tr("Scene"): scene.index,
@@ -1760,8 +1973,15 @@ def _render_script_settings(panel, params):
                     }
                     for scene in scenes
                 ]
-                st.dataframe(document_rows, hide_index=True, use_container_width=True)
                 st.dataframe(scene_rows, hide_index=True, use_container_width=True)
+
+                markdown_edit_error = st.session_state.get(
+                    "markdown_script_edit_error", ""
+                )
+                if markdown_edit_error:
+                    st.error(
+                        f"{tr('Markdown Emphasis Edit Error')}: {markdown_edit_error}"
+                    )
 
             markdown_error = st.session_state.get("markdown_script_error", "")
             if markdown_error:
@@ -2850,14 +3070,10 @@ def _render_emphasis_settings(panel, params):
             )
             disabled = not params.emphasis_enabled
 
-            st.session_state.setdefault("emphasis_terms_input", "")
-            params.emphasis_terms = st.text_area(
-                tr("Manual Emphasis Terms"),
-                help=tr("Manual Emphasis Terms Help"),
-                key="emphasis_terms_input",
-                height=68,
-                disabled=disabled,
-            )
+            # Markdown 行内重点词是唯一来源，保留空字符串只用于兼容旧版
+            # VideoParams 和非 WebUI 调用方，避免历史任务的全局重点词覆盖稿件。
+            params.emphasis_terms = ""
+            st.caption(tr("Emphasis Terms From Markdown"))
 
             params.emphasis_font_name = "FZKaTongJianTi.ttf"
             st.caption(f"{tr('Emphasis Font')}: 项目内关键词专用字体")
@@ -2934,6 +3150,7 @@ def _render_generation_controls(
     generation_disabled = (
         not params.markdown_script
         or bool(st.session_state.get("markdown_script_error"))
+        or bool(st.session_state.get("markdown_script_edit_error"))
         or markdown_source_invalid
     )
 
@@ -3092,14 +3309,16 @@ def _render_generation_controls(
             if config.ui["hide_log"]:
                 return
             records = st.session_state.setdefault("generation_log_records", [])
-            records.append(str(msg).rstrip())
-            # 日志用于 WebUI 诊断，不需要无限增长；限制数量避免长任务反复
-            # rerun 后页面负担过重。
-            if len(records) > 1000:
-                del records[:-1000]
-            render_generation_logs(log_container)
+            if _remember_generation_log(records, msg):
+                render_generation_logs(log_container)
 
+        previous_log_handler_id = st.session_state.pop(
+            "generation_log_handler_id", None
+        )
+        if previous_log_handler_id is not None:
+            remove_logger_handler_safely(previous_log_handler_id)
         log_handler_id = logger.add(log_received)
+        st.session_state["generation_log_handler_id"] = log_handler_id
         try:
             st.toast(tr("Generating Video"))
             logger.info(tr("Start Generating Video"))
@@ -3130,6 +3349,8 @@ def _render_generation_controls(
         finally:
             _remove_active_generation_task(task_id)
             remove_logger_handler_safely(log_handler_id)
+            if st.session_state.get("generation_log_handler_id") == log_handler_id:
+                st.session_state.pop("generation_log_handler_id", None)
 
     render_generation_logs(log_container)
 

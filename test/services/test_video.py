@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.config import config
-from app.models.schema import MaterialInfo, VideoAspect, VideoTransitionMode
+from app.models.schema import MaterialInfo, VideoAspect, VideoParams, VideoTransitionMode
 from app.services.emphasis import EmphasisCue
 from app.services import video as vd
 from app.utils import utils
@@ -241,7 +241,132 @@ def test_fast_subtitle_filter_declares_original_video_size():
     )
 
     assert "original_size=1920x1080" in subtitle_filter
-    assert "FontSize=16" in subtitle_filter
+    assert "FontName=" + "\u5fae\u8f6f\u96c5\u9ed1" in subtitle_filter
+    assert "FontSize=21" in subtitle_filter
+    assert "Bold=0" in subtitle_filter
+    assert "MarginV=24" in subtitle_filter
+
+
+def test_emphasis_ass_keeps_shadow_color_animation_and_position(tmp_path):
+    cue = EmphasisCue(
+        text="重点词",
+        start=1.2,
+        end=2.4,
+        color="#FF5A36",
+        animation="slide_left",
+        sound_id="whoosh-01",
+        position="center",
+        layer=1,
+    )
+    ass_path = tmp_path / "emphasis.ass"
+
+    vd._write_emphasis_ass(
+        cues=[cue],
+        output_path=str(ass_path),
+        video_size=(1920, 1080),
+        font_path="E:/videoCreaterForAi/resource/fonts/MicrosoftYaHeiBold.ttc",
+        font_size=164,
+    )
+
+    ass_text = ass_path.read_text(encoding="utf-8-sig")
+    assert "PlayResX: 1920" in ass_text
+    assert "Style: Emphasis," + "\u5fae\u8f6f\u96c5\u9ed1" in ass_text
+    assert "Dialogue: 1,0:00:01.20,0:00:02.40" in ass_text
+    assert "\\move(810,421,960,421" in ass_text
+    assert "\\1c&H000000&\\1a&H19&\\blur9" in ass_text
+    assert "\\1c&H00365AFF&" in ass_text
+    assert ass_text.count("重点词") == 2
+
+
+def test_ass_uses_embedded_family_name_for_bundled_emphasis_font():
+    assert vd._ass_font_name("resource/fonts/FZKaTongJianTi.ttf") == (
+        "\u840c\u8da3\u4f53\uff08\u4e2a\u4eba\u514d\uff0c\u4f01\u4e1a\u9700\u4ed8\u8d39\uff09"
+    )
+
+
+def test_video_params_default_to_eight_render_threads():
+    assert VideoParams(video_subject="thread default").n_threads == 8
+
+
+def test_fast_ffmpeg_path_combines_emphasis_ass_sfx_and_eight_threads(tmp_path):
+    subtitle_path = tmp_path / "subtitle.srt"
+    video_path = tmp_path / "source.mp4"
+    audio_path = tmp_path / "voice.wav"
+    font_path = tmp_path / "font.ttf"
+    emphasis_path = tmp_path / "emphasis.json"
+    output_path = tmp_path / "output.mp4"
+    for path in (subtitle_path, video_path, audio_path, font_path):
+        path.write_bytes(b"fixture")
+    cue = EmphasisCue(
+        text="keyword",
+        start=0.5,
+        end=1.5,
+        color="#FF5A36",
+        animation="pop",
+        sound_id="pop-01",
+        position="center",
+    )
+    vd.emphasis.write_emphasis_cues([cue], emphasis_path)
+    params = types.SimpleNamespace(
+        subtitle_enabled=True,
+        subtitle_position="bottom",
+        text_background_color=False,
+        rounded_subtitle_background=False,
+        emphasis_enabled=True,
+        emphasis_font_name="font.ttf",
+        emphasis_sfx_enabled=True,
+        emphasis_sfx_volume=0.5,
+        font_size=60,
+        text_fore_color="#FFFFFF",
+        stroke_color="#000000",
+        stroke_width=1,
+        video_aspect=VideoAspect.landscape,
+        voice_volume=1.0,
+        bgm_type="",
+        bgm_file="",
+        bgm_volume=0.2,
+        n_threads=8,
+    )
+    commands = []
+
+    def run_fast_ffmpeg(command, *_args):
+        commands.append(command)
+        output_path.write_bytes(b"encoded")
+        return True, ""
+
+    with (
+        patch.object(vd, "_probe_video_duration", return_value=2.0),
+        patch.object(vd, "resolve_emphasis_font_path", return_value=str(font_path)),
+        patch.object(vd, "get_bgm_file", return_value=""),
+        patch.object(
+            vd,
+            "_collect_emphasis_sfx_inputs",
+            return_value=[(0.5, str(tmp_path / "pop.wav"))],
+        ),
+        patch.object(vd, "_emphasis_sfx_ffmpeg_gain", return_value=0.777),
+        patch.object(vd, "_get_effective_video_codec", return_value="libx264"),
+        patch.object(vd, "_run_ffmpeg_with_progress", side_effect=run_fast_ffmpeg),
+    ):
+        assert vd._generate_video_with_fast_ffmpeg(
+            video_path=str(video_path),
+            audio_path=str(audio_path),
+            subtitle_path=str(subtitle_path),
+            output_file=str(output_path),
+            params=params,
+            font_path=str(font_path),
+            emphasis_path=str(emphasis_path),
+        ) is True
+
+    command = commands[0]
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "subtitles=filename=" in filter_complex
+    assert "ass=filename=" in filter_complex
+    assert "atrim=duration=0.6" in filter_complex
+    assert "volume=0.7770[sfx0]" in filter_complex
+    assert "amix=inputs=1:duration=longest:dropout_transition=0:normalize=0[sfx_raw]" in filter_complex
+    assert "[sfx_raw]volume=1.8000[sfx]" in filter_complex
+    assert "normalize=0,alimiter=limit=0.95:level=0" in filter_complex
+    assert command[command.index("-threads") + 1] == "8"
 
 
 def test_render_scene_allocation_honors_speed_and_exact_output_duration(tmp_path):

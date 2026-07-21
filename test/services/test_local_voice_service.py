@@ -49,7 +49,7 @@ def test_synthesize_uses_profile_and_writes_manifest(tmp_path: Path):
         }
 
     service = LocalVoiceService(settings, runner=fake_runner)
-    result = service.synthesize("task-1", tmp_path / "task-1", "第一句。第二句。", "local:speaker")
+    result = service.synthesize("task-1", tmp_path / "task-1", "第一句。第二句。", "local:default")
 
     assert result.audio_file.is_file()
     assert result.duration == 0.3

@@ -251,6 +251,10 @@ def generate_audio(task_id, params, video_script):
                 def report_audio_progress(stage, completed, total, detail):
                     stage_progress = 100 if total <= 0 else completed / total * 100
                     _update_task_progress(task_id, "audio", stage_progress, detail)
+                    logger.info(
+                        "local CosyVoice audio progress: "
+                        f"{completed}/{total} ({stage_progress:.0f}%) - {detail}"
+                    )
 
                 result = _get_local_voice_service().synthesize(
                     task_id,
@@ -450,6 +454,10 @@ def _generate_markdown_emphasis(task_id, params, timed_rows) -> str:
         timed_rows=timed_rows,
         random_colors=params.emphasis_random_colors,
         random_animations=params.emphasis_random_animations,
+        positions_by_row_terms={
+            row.number: getattr(row, "emphasis_positions", {})
+            for row in params.markdown_script.rows
+        },
     )
     output_path = path.join(utils.task_dir(task_id), "emphasis.json")
     try:

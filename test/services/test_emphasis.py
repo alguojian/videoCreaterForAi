@@ -84,6 +84,7 @@ def test_same_subtitle_terms_overlap_in_three_distinct_layers():
     assert {cue.position for cue in cues}.issubset(set(emphasis.EMPHASIS_POSITIONS))
     assert cues[0].start < cues[1].start < cues[2].start
     assert [cue.end for cue in cues] == [4.0, 4.0, 4.0]
+    assert len({cue.color for cue in cues}) == 1
 
 
 def test_emphasis_cues_disappear_when_their_sentence_ends():
@@ -322,6 +323,31 @@ def test_markdown_emphasis_repeats_the_same_term_in_each_source_row():
     assert cues[1].start == 2.0
 
 
+def test_markdown_emphasis_uses_position_selected_for_each_term():
+    rows = [
+        TimedScriptRow(1, "左侧重点词和右侧重点词", ("左侧重点词", "右侧重点词"), 0.0, 4.0),
+    ]
+
+    cues = emphasis.build_markdown_emphasis_cues(
+        "task-md-position",
+        rows,
+        positions_by_row_terms={1: {"左侧重点词": "left", "右侧重点词": "right"}},
+    )
+
+    assert [cue.position for cue in cues] == ["left", "right"]
+
+
+def test_markdown_emphasis_defaults_every_source_row_to_center():
+    rows = [
+        TimedScriptRow(1, "第一行重点词", ("重点词",), 0.0, 2.0),
+        TimedScriptRow(2, "第二行重点词", ("重点词",), 2.0, 4.0),
+    ]
+
+    cues = emphasis.build_markdown_emphasis_cues("task-md-center", rows)
+
+    assert [cue.position for cue in cues] == ["center", "center"]
+
+
 def test_markdown_emphasis_groups_multiple_terms_by_source_row():
     rows = [
         TimedScriptRow(
@@ -338,6 +364,7 @@ def test_markdown_emphasis_groups_multiple_terms_by_source_row():
     assert len(cues) == 2
     assert [cue.layer for cue in cues] == [0, 1]
     assert cues[0].end == cues[1].end == 3.0
+    assert cues[0].color == cues[1].color
 
 
 def test_markdown_emphasis_preserves_duplicate_terms_listed_in_one_row():

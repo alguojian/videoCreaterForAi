@@ -41,6 +41,9 @@ def test_advanced_subtitles_keep_moviepy_path():
     assert is_fast_subtitle_path_supported(
         _params(subtitle_position="custom"), "subtitle.srt"
     ) is False
+
+
+def test_emphasis_overlays_can_use_the_fast_ffmpeg_path():
     assert is_fast_subtitle_path_supported(
         _params(emphasis_enabled=True), "subtitle.srt"
-    ) is False
+    ) is True

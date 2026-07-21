@@ -66,6 +66,14 @@ def test_webui_locks_emphasis_to_packaged_fangzheng_cartoon_and_fixed_pop_animat
     assert '"emphasis_random_animations_checkbox", False' in rendering
 
 
+def test_webui_takes_emphasis_terms_from_markdown_rows_only():
+    rendering = _function_source("_render_emphasis_settings")
+
+    assert 'params.emphasis_terms = ""' in rendering
+    assert 'st.text_area(' not in rendering
+    assert 'tr("Manual Emphasis Terms")' not in rendering
+
+
 def test_apply_document_sets_content_without_generation_settings():
     document = script_document.parse_markdown_script(
         """# 婚姻二字
@@ -117,8 +125,13 @@ def test_webui_renders_markdown_upload_preview_and_generation_guards():
     assert "parse_markdown_upload" in script_settings
     assert "apply_to_video_params" in script_settings
     assert "model_dump" in script_settings
-    assert script_settings.count("st.dataframe") >= 2
-    assert "disabled=markdown_import_active" in script_settings
+    assert "st.data_editor" in script_settings
+    assert "SelectboxColumn" in script_settings
+    assert 'key="markdown_script_editor"' in script_settings
+    assert 'key="markdown_emphasis_position_editor"' in script_settings
+    assert "disabled=markdown_import_active" not in script_settings
+    assert "uploaded_markdown is None" in script_settings
+    assert "markdown_script_hash" in script_settings
     assert 'tr("Clear Markdown Import")' in script_settings
     assert "Markdown Parse Error" in script_settings
     assert 'tr("Markdown Requires Online Material Source")' in generation_controls
@@ -134,11 +147,15 @@ def test_markdown_preview_dataframe_columns_use_localized_labels():
         "Row",
         "Video Script",
         "Manual Emphasis Terms",
+        "Markdown Search Terms",
+        "Emphasis Position",
+        "Emphasis Term",
+        "Emphasis Position Help",
         "Scene",
         "Rows",
         "Markdown Scene Search Terms",
     ):
-        assert f'tr("{label}"):' in script_settings
+        assert f'tr("{label}")' in script_settings
 
 
 def test_webui_is_markdown_only_without_llm_controls():

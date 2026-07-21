@@ -108,6 +108,9 @@ _runtime_disabled_video_codecs = set()
 _SCENE_DURATION_TOLERANCE = 0.001
 _SCENE_CLEANUP_MAX_ATTEMPTS = 3
 _SCENE_CLEANUP_RETRY_DELAY = 0.05
+_DEFAULT_RENDER_THREADS = 8
+_ASS_SUBTITLE_FONT_LAYOUT_HEIGHT = 384
+_ASS_SUBTITLE_MARGIN_UNITS_1080P = 24
 
 
 @dataclass(frozen=True)
@@ -447,7 +450,7 @@ def concat_video_clips_with_ffmpeg(
             "-c:v",
             codec,
             "-threads",
-            str(threads or 2),
+            str(threads or _DEFAULT_RENDER_THREADS),
             "-pix_fmt",
             "yuv420p",
         ]
@@ -784,7 +787,7 @@ def _render_scene_allocation_with_ffmpeg(
             "-preset",
             "p4" if codec == "h264_nvenc" else "veryfast",
             "-threads",
-            str(threads or 2),
+            str(threads or _DEFAULT_RENDER_THREADS),
             "-pix_fmt",
             "yuv420p",
             "-t",
@@ -1072,7 +1075,7 @@ def combine_videos(
     video_concat_mode: VideoConcatMode = VideoConcatMode.random,
     video_transition_mode: VideoTransitionMode = None,
     max_clip_duration: int = 5,
-    threads: int = 2,
+    threads: int = _DEFAULT_RENDER_THREADS,
     clip_speed: float = 1.0,
     progress_callback=None,
 ) -> str:
@@ -1507,6 +1510,14 @@ _SYSTEM_EMPHASIS_FONTS = {
     "simkai.ttf": "simkai.ttf",
     "notosanssc-vf.ttf": "NotoSansSC-VF.ttf",
 }
+_ASS_FONT_NAME_BY_FILENAME = {
+    # libass chooses fonts by their embedded family name, not their filename.
+    # This bundled display font has a different internal name, so using its
+    # filename silently fell back to a system font in the fast ASS path.
+    "fzkatongjianti.ttf": "萌趣体（个人免，企业需付费）",
+    "microsoftyaheibold.ttc": "微软雅黑",
+    "microsoftyaheinormal.ttc": "微软雅黑",
+}
 _EMPHASIS_FONT_WEIGHT = 700
 
 
@@ -1562,14 +1573,23 @@ def _ass_color(hex_color: str, default: str) -> str:
     return f"&H00{blue}{green}{red}".upper()
 
 
+def _ass_font_name(font_path: str) -> str:
+    filename = Path(font_path).name.lower()
+    return _ASS_FONT_NAME_BY_FILENAME.get(filename, Path(font_path).stem)
+
+
 def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> str:
     alignment = {"bottom": 2, "center": 5, "top": 8}[params.subtitle_position]
     video_width, video_height = VideoAspect(params.video_aspect).to_resolution()
-    # The FFmpeg subtitles filter renders SRT through libass's 288px-high
-    # virtual canvas. Convert the UI's pixel font size so 60 means 60px on the
-    # selected output video instead of being scaled up again by libass.
-    ass_font_size = max(1, round(int(params.font_size) * 288 / video_height))
-    font_name = Path(font_path).stem
+    # 384 keeps the UI's 60px subtitle at about 60px on a 1080p output.
+    # 19 ASS layout units place the rendered glyphs about 80px above the
+    # bottom edge at 1080p, matching the requested visual safe margin.
+    ass_font_size = max(
+        1,
+        round(int(params.font_size) * _ASS_SUBTITLE_FONT_LAYOUT_HEIGHT / video_height),
+    )
+    ass_margin_v = _ASS_SUBTITLE_MARGIN_UNITS_1080P
+    font_name = _ass_font_name(font_path)
     force_style = ",".join(
         [
             f"FontName={font_name}",
@@ -1577,8 +1597,9 @@ def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> s
             f"PrimaryColour={_ass_color(params.text_fore_color, '#FFFFFF')}",
             f"OutlineColour={_ass_color(params.stroke_color, '#000000')}",
             f"Outline={max(0, int(round(float(params.stroke_width))))}",
+            "Bold=0",
             f"Alignment={alignment}",
-            "MarginV=42",
+            f"MarginV={ass_margin_v}",
         ]
     )
     subtitle_file = _escape_ffmpeg_filter_value(os.path.abspath(subtitle_path))
@@ -1589,6 +1610,183 @@ def _build_fast_subtitle_filter(params, subtitle_path: str, font_path: str) -> s
         f"fontsdir='{fonts_dir}':"
         f"force_style='{_escape_ffmpeg_filter_value(force_style)}'"
     )
+
+
+def _format_ass_timestamp(seconds: float) -> str:
+    """Format an ASS timestamp (h:mm:ss.cc) without rounding past the cue."""
+    centiseconds = max(0, int(float(seconds) * 100))
+    hours, remainder = divmod(centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    whole_seconds, centiseconds = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
+
+
+def _escape_ass_text(value: str) -> str:
+    """Keep cue text literal instead of allowing it to inject ASS tags."""
+    return (
+        str(value)
+        .replace("\\", r"\\")
+        .replace("{", "（")
+        .replace("}", "）")
+        .replace("\r\n", r"\N")
+        .replace("\n", r"\N")
+        .replace("\r", r"\N")
+    )
+
+
+def _emphasis_ass_position(cue, video_width: int, video_height: int) -> tuple[int, int]:
+    x_ratio = {"left": 0.24, "center": 0.50, "right": 0.76}[cue.position]
+    y_ratio = _EMPHASIS_LAYER_Y_RATIOS[cue.layer]
+    return round(video_width * x_ratio), round(video_height * y_ratio)
+
+
+def _emphasis_ass_motion_tags(cue, x: int, y: int) -> str:
+    """Map the existing entrance animations to libass transform primitives."""
+    duration_ms = max(10, int((cue.end - cue.start) * 1000))
+    entrance_ms = min(220, max(10, duration_ms // 2))
+    if cue.animation == "pop":
+        midpoint = max(1, entrance_ms * 3 // 5)
+        return (
+            rf"\pos({x},{y})\fscx72\fscy72"
+            rf"\t(0,{midpoint},\fscx110\fscy110)"
+            rf"\t({midpoint},{entrance_ms},\fscx100\fscy100)"
+        )
+    if cue.animation == "zoom":
+        return rf"\pos({x},{y})\fscx68\fscy68\t(0,{entrance_ms},\fscx100\fscy100)"
+    if cue.animation == "stamp":
+        midpoint = max(1, entrance_ms * 3 // 5)
+        return (
+            rf"\pos({x},{y})\fscx58\fscy58"
+            rf"\t(0,{midpoint},\fscx106\fscy106)"
+            rf"\t({midpoint},{entrance_ms},\fscx100\fscy100)"
+        )
+    if cue.animation == "slide_left":
+        return rf"\move({x - 150},{y},{x},{y},0,{entrance_ms})"
+    if cue.animation == "slide_right":
+        return rf"\move({x + 150},{y},{x},{y},0,{entrance_ms})"
+    if cue.animation == "shake":
+        # ASS has no sine expression.  A short overshoot keeps the familiar
+        # attention-grabbing entrance without splitting one cue into many events.
+        midpoint = max(1, entrance_ms // 2)
+        return (
+            rf"\pos({x},{y})\t(0,{midpoint},\frz3)"
+            rf"\t({midpoint},{entrance_ms},\frz0)"
+        )
+    return rf"\pos({x},{y})"
+
+
+def _write_emphasis_ass(
+    cues: list[emphasis.EmphasisCue],
+    output_path: str,
+    video_size: tuple[int, int],
+    font_path: str,
+    font_size: int,
+) -> None:
+    """Write emphasis overlays as ASS so FFmpeg can render them in one pass."""
+    video_width, video_height = video_size
+    font_name = _ass_font_name(font_path).replace(",", " ")
+    header = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {video_width}",
+        f"PlayResY: {video_height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,"
+        "Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+        "Alignment,MarginL,MarginR,MarginV,Encoding",
+        f"Style: Emphasis,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+        "-1,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
+        "",
+        "[Events]",
+        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+    ]
+    events: list[str] = []
+    for cue in cues:
+        x, y = _emphasis_ass_position(cue, video_width, video_height)
+        motion_tags = _emphasis_ass_motion_tags(cue, x, y)
+        shadow_motion_tags = _emphasis_ass_motion_tags(
+            cue,
+            x + _EMPHASIS_SHADOW_OFFSET[0],
+            y + _EMPHASIS_SHADOW_OFFSET[1],
+        )
+        text = _escape_ass_text(cue.text)
+        start = _format_ass_timestamp(cue.start)
+        end = _format_ass_timestamp(cue.end)
+        # The original effect is a single lower-right soft black shadow.  A
+        # blurred, offset duplicate matches it much more closely than ASS's
+        # built-in hard shadow and still stays entirely inside libass.
+        shadow_tags = (
+            rf"\an5{shadow_motion_tags}"
+            rf"\1c&H000000&\1a&H19&\blur{_EMPHASIS_SHADOW_BLUR}"
+        )
+        events.append(
+            f"Dialogue: {cue.layer},{start},{end},Emphasis,,0,0,0,,{{{shadow_tags}}}{text}"
+        )
+        events.append(
+            f"Dialogue: {cue.layer + 10},{start},{end},Emphasis,,0,0,0,,"
+            f"{{\\an5{motion_tags}\\1c{_ass_color(cue.color, '#FF5A36')}&}}{text}"
+        )
+    Path(output_path).write_text("\n".join([*header, *events, ""]), encoding="utf-8")
+
+
+def _build_emphasis_ass_filter(ass_path: str, font_path: str) -> str:
+    ass_file = _escape_ffmpeg_filter_value(os.path.abspath(ass_path))
+    fonts_dir = _escape_ffmpeg_filter_value(os.path.dirname(os.path.abspath(font_path)))
+    return f"ass=filename='{ass_file}':fontsdir='{fonts_dir}'"
+
+
+def _collect_emphasis_sfx_inputs(
+    cues: list[emphasis.EmphasisCue],
+    enabled: bool,
+) -> list[tuple[float, str]]:
+    if not enabled or not cues:
+        return []
+    try:
+        manifest = {
+            item.sound_id: item
+            for item in emphasis.load_sound_manifest(utils.root_dir())
+        }
+    except Exception as exc:
+        logger.warning(f"failed to load emphasis sound manifest for FFmpeg: {exc}")
+        return []
+
+    inputs: list[tuple[float, str]] = []
+    root = Path(utils.root_dir()).resolve()
+    for cue in cues:
+        item = manifest.get(cue.sound_id)
+        if item is None:
+            continue
+        sound_path = (root / item.file).resolve()
+        if root not in sound_path.parents or not sound_path.is_file():
+            logger.warning(f"skip unavailable emphasis sound: {item.file}")
+            continue
+        inputs.append((cue.start, str(sound_path)))
+    return inputs
+
+
+@lru_cache(maxsize=64)
+def _emphasis_sfx_ffmpeg_gain(sound_path: str, volume: float) -> float:
+    """Match MoviePy's per-effect peak normalization in the FFmpeg path."""
+    if volume <= 0:
+        return 0.0
+    try:
+        with wave.open(sound_path, "rb") as wav_file:
+            if wav_file.getcomptype() != "NONE" or wav_file.getsampwidth() != 2:
+                raise ValueError("sound must be an uncompressed 16-bit WAV")
+            frame_count = min(wav_file.getnframes(), int(wav_file.getframerate() * 0.6))
+            samples = np.frombuffer(wav_file.readframes(frame_count), dtype="<i2")
+    except (OSError, ValueError, wave.Error) as exc:
+        logger.warning(f"failed to inspect emphasis sound level {sound_path}: {exc}")
+        return _EMPHASIS_SFX_PEAK * volume
+
+    if not len(samples):
+        return 0.0
+    peak = float(np.abs(samples.astype(np.float32) / 32768.0).max())
+    if peak <= 0:
+        return 0.0
+    return _EMPHASIS_SFX_PEAK * volume / peak
 
 
 def _run_ffmpeg_with_progress(
@@ -1641,9 +1839,10 @@ def _generate_video_with_fast_ffmpeg(
     output_file: str,
     params: VideoParams,
     font_path: str,
+    emphasis_path: str = "",
     progress_callback=None,
 ) -> bool:
-    """Burn ordinary SRT subtitles with one FFmpeg pass instead of MoviePy/PIL."""
+    """Burn SRT subtitles and optional emphasis ASS overlays in one FFmpeg pass."""
     if not is_fast_subtitle_path_supported(params, subtitle_path):
         return False
     if not os.path.isfile(subtitle_path):
@@ -1658,80 +1857,167 @@ def _generate_video_with_fast_ffmpeg(
         logger.warning(f"fast subtitle path skipped because duration probe failed: {exc}")
         return False
 
-    bgm_file = get_bgm_file(bgm_type=params.bgm_type, bgm_file=params.bgm_file)
-    subtitle_filter = _build_fast_subtitle_filter(params, subtitle_path, font_path)
-    effective_codec = _get_effective_video_codec()
-    base_command = [
-        utils.get_ffmpeg_binary(),
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        video_path,
-        "-i",
-        audio_path,
-    ]
-    if bgm_file:
-        base_command.extend(["-stream_loop", "-1", "-i", bgm_file])
-        filter_complex = (
-            f"[0:v]{subtitle_filter}[v];"
-            f"[1:a]volume={float(params.voice_volume):.4f}[voice];"
-            f"[2:a]volume={float(params.bgm_volume):.4f}[bgm];"
-            "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=3[a]"
-        )
-        base_command.extend(["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]"])
-    else:
-        base_command.extend(
-            ["-vf", subtitle_filter, "-map", "0:v:0", "-map", "1:a:0"]
-        )
-    base_command.extend(
-        [
-            "-c:v",
-            effective_codec,
-            "-preset",
-            "p4" if effective_codec == "h264_nvenc" else "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            audio_codec,
-            "-b:a",
-            audio_bitrate,
-            "-shortest",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-            output_file,
-        ]
-    )
+    emphasis_cues: list[emphasis.EmphasisCue] = []
+    emphasis_ass_path = ""
+    try:
+        if params.emphasis_enabled:
+            if not emphasis_path or not os.path.isfile(emphasis_path):
+                return False
+            emphasis_cues = emphasis.load_emphasis_cues(emphasis_path)
+            if emphasis_cues:
+                emphasis_font_path = resolve_emphasis_font_path(
+                    getattr(params, "emphasis_font_name", "FZKaTongJianTi.ttf"),
+                    "".join(cue.text for cue in emphasis_cues),
+                )
+                if not os.path.isfile(emphasis_font_path):
+                    logger.warning("fast emphasis path skipped because emphasis font is missing")
+                    return False
+                temporary_ass = tempfile.NamedTemporaryFile(
+                    prefix="emphasis-",
+                    suffix=".ass",
+                    dir=os.path.dirname(os.path.abspath(output_file)),
+                    delete=False,
+                )
+                temporary_ass.close()
+                emphasis_ass_path = temporary_ass.name
+                _write_emphasis_ass(
+                    cues=emphasis_cues,
+                    output_path=emphasis_ass_path,
+                    video_size=VideoAspect(params.video_aspect).to_resolution(),
+                    font_path=emphasis_font_path,
+                    font_size=max(int(params.font_size) + 104, 164),
+                )
+            else:
+                emphasis_font_path = font_path
+        else:
+            emphasis_font_path = font_path
 
-    for codec in (effective_codec, _DEFAULT_VIDEO_CODEC):
-        if codec != effective_codec and effective_codec == _DEFAULT_VIDEO_CODEC:
-            continue
-        command = list(base_command)
-        command[command.index("-c:v") + 1] = codec
-        command[command.index("-preset") + 1] = (
-            "p4" if codec == "h264_nvenc" else "veryfast"
+        bgm_file = get_bgm_file(bgm_type=params.bgm_type, bgm_file=params.bgm_file)
+        subtitle_filter = _build_fast_subtitle_filter(params, subtitle_path, font_path)
+        video_filter = subtitle_filter
+        if emphasis_ass_path:
+            video_filter = f"{video_filter},{_build_emphasis_ass_filter(emphasis_ass_path, emphasis_font_path)}"
+
+        effective_codec = _get_effective_video_codec()
+        base_command = [
+            utils.get_ffmpeg_binary(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            video_path,
+            "-i",
+            audio_path,
+        ]
+        bed_audio_labels = ["[voice]"]
+        sfx_audio_labels: list[str] = []
+        audio_filters = [f"[1:a]volume={float(params.voice_volume):.4f}[voice]"]
+        next_input_index = 2
+        if bgm_file:
+            base_command.extend(["-stream_loop", "-1", "-i", bgm_file])
+            audio_filters.append(
+                f"[{next_input_index}:a]volume={float(params.bgm_volume):.4f}[bgm]"
+            )
+            bed_audio_labels.append("[bgm]")
+            next_input_index += 1
+
+        sfx_inputs = _collect_emphasis_sfx_inputs(
+            emphasis_cues,
+            enabled=bool(params.emphasis_enabled and params.emphasis_sfx_enabled),
         )
+        for sfx_number, (start, sound_path) in enumerate(sfx_inputs):
+            sfx_gain = _emphasis_sfx_ffmpeg_gain(
+                sound_path, float(params.emphasis_sfx_volume)
+            )
+            if sfx_gain <= 0:
+                continue
+            base_command.extend(["-itsoffset", f"{start:.3f}", "-i", sound_path])
+            label = f"sfx{sfx_number}"
+            audio_filters.append(
+                f"[{next_input_index}:a]atrim=duration=0.6,volume={sfx_gain:.4f}[{label}]"
+            )
+            sfx_audio_labels.append(f"[{label}]")
+            next_input_index += 1
+
+        if len(bed_audio_labels) == 1:
+            audio_filters.append("[voice]anull[bed]")
+        else:
+            audio_filters.append(
+                f"{''.join(bed_audio_labels)}amix=inputs={len(bed_audio_labels)}:duration=first:"
+                "dropout_transition=3:normalize=0[bed]"
+            )
+        if sfx_audio_labels:
+            # Effects stay on their own bus, then receive a direct gain boost
+            # before being mixed back with the unchanged voice/BGM bed.
+            audio_filters.append(
+                f"{''.join(sfx_audio_labels)}amix=inputs={len(sfx_audio_labels)}:"
+                "duration=longest:dropout_transition=0:normalize=0[sfx_raw]"
+            )
+            audio_filters.append(f"[sfx_raw]volume={_EMPHASIS_SFX_MIX_BOOST:.4f}[sfx]")
+            audio_filters.append(
+                "[bed][sfx]amix=inputs=2:duration=first:"
+                "dropout_transition=0:normalize=0,alimiter=limit=0.95:level=0[a]"
+            )
+        else:
+            audio_filters.append("[bed]alimiter=limit=0.95:level=0[a]")
+        filter_complex = f"[0:v]{video_filter}[v];" + ";".join(audio_filters)
+        base_command.extend(["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]"])
+        base_command.extend(
+            [
+                "-c:v",
+                effective_codec,
+                "-preset",
+                "p4" if effective_codec == "h264_nvenc" else "veryfast",
+                "-threads",
+                str(params.n_threads or _DEFAULT_RENDER_THREADS),
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                audio_codec,
+                "-b:a",
+                audio_bitrate,
+                "-shortest",
+                "-progress",
+                "pipe:1",
+                "-nostats",
+                output_file,
+            ]
+        )
+
+        for codec in (effective_codec, _DEFAULT_VIDEO_CODEC):
+            if codec != effective_codec and effective_codec == _DEFAULT_VIDEO_CODEC:
+                continue
+            command = list(base_command)
+            command[command.index("-c:v") + 1] = codec
+            command[command.index("-preset") + 1] = (
+                "p4" if codec == "h264_nvenc" else "veryfast"
+            )
+            if os.path.exists(output_file):
+                os.remove(output_file)
+            if progress_callback:
+                progress_callback(0, f"FFmpeg 编码 0%（{codec}）")
+            succeeded, diagnostics = _run_ffmpeg_with_progress(
+                command, total_duration, progress_callback
+            )
+            if succeeded and os.path.isfile(output_file) and os.path.getsize(output_file) > 0:
+                if codec != effective_codec:
+                    _disable_runtime_video_codec(effective_codec, diagnostics or "fast path failed")
+                return True
+            logger.warning(
+                f"fast subtitle FFmpeg encode failed with {codec}: "
+                f"{diagnostics[-1000:] if diagnostics else 'no diagnostics'}"
+            )
+
         if os.path.exists(output_file):
             os.remove(output_file)
-        if progress_callback:
-            progress_callback(0, f"FFmpeg 编码 0%（{codec}）")
-        succeeded, diagnostics = _run_ffmpeg_with_progress(
-            command, total_duration, progress_callback
-        )
-        if succeeded and os.path.isfile(output_file) and os.path.getsize(output_file) > 0:
-            if codec != effective_codec:
-                _disable_runtime_video_codec(effective_codec, diagnostics or "fast path failed")
-            return True
-        logger.warning(
-            f"fast subtitle FFmpeg encode failed with {codec}: "
-            f"{diagnostics[-1000:] if diagnostics else 'no diagnostics'}"
-        )
-
-    if os.path.exists(output_file):
-        os.remove(output_file)
-    return False
+        return False
+    except Exception as exc:
+        logger.warning(f"fast emphasis FFmpeg path skipped: {exc}")
+        return False
+    finally:
+        if emphasis_ass_path and os.path.exists(emphasis_ass_path):
+            os.remove(emphasis_ass_path)
 
 
 def _emphasis_scale(animation: str, current_time: float, duration: float) -> float:
@@ -1750,6 +2036,7 @@ _EMPHASIS_SAFE_MARGIN = 40
 _EMPHASIS_LAYER_Y_RATIOS = (0.24, 0.39, 0.53)
 _EMPHASIS_MAX_ANIMATION_SCALE = 1.1
 _EMPHASIS_SFX_PEAK = 0.85
+_EMPHASIS_SFX_MIX_BOOST = 1.8
 _EMPHASIS_SHAKE_OFFSET = 18
 _EMPHASIS_TEXT_MARGIN = (52, 48)
 _EMPHASIS_STROKE_WIDTH = 0
@@ -2061,6 +2348,7 @@ def generate_video(
         output_file=output_file,
         params=params,
         font_path=font_path,
+        emphasis_path=emphasis_path,
         progress_callback=progress_callback,
     ):
         logger.info("fast FFmpeg subtitle path completed")
@@ -2310,7 +2598,7 @@ def generate_video(
         audio_fps=output_audio_fps,
         audio_bitrate=audio_bitrate,
         temp_audiofile_path=_get_temp_audio_dir(output_dir),
-        threads=params.n_threads or 2,
+        threads=params.n_threads or _DEFAULT_RENDER_THREADS,
         logger=None,
         fps=fps,
     )

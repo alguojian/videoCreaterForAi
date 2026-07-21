@@ -29,6 +29,54 @@ class TestSceneMaterialAcquisition(unittest.TestCase):
         config.proxy.clear()
         config.proxy.update(self.original_proxy_config)
 
+    def test_fallback_search_terms_expand_common_queries(self):
+        self.assertEqual(
+            material._fallback_search_terms("app development"),
+            ("software development", "coding", "software", "technology"),
+        )
+        self.assertEqual(
+            material._fallback_search_terms("AI model switching"),
+            (
+                "artificial intelligence",
+                "ai technology",
+                "technology",
+                "computer",
+            ),
+        )
+
+    def test_download_scene_materials_uses_automatic_fallback_after_authored_terms(self):
+        scene = TimedScriptScene(1, 1, 1, ("app development",), 0.0, 4.0)
+        fallback_item = material.MaterialInfo(
+            provider="pixabay", url="https://x/fallback.mp4", duration=4
+        )
+
+        def fake_search(search_term, minimum_duration, video_aspect):
+            if search_term == "software development":
+                return [fallback_item]
+            return []
+
+        with (
+            patch.object(material, "search_videos_pixabay", side_effect=fake_search) as search,
+            patch.object(
+                material,
+                "save_video",
+                return_value="saved/fallback.mp4",
+            ),
+        ):
+            plans = material.download_scene_materials(
+                task_id="automatic-fallback-task",
+                scenes=[scene],
+                source="pixabay",
+                video_aspect=VideoAspect.landscape,
+                max_clip_duration=5,
+            )
+
+        self.assertEqual(
+            [call.kwargs["search_term"] for call in search.call_args_list],
+            ["app development", "software development"],
+        )
+        self.assertEqual(plans[0].video_paths, ("saved/fallback.mp4",))
+
     def test_download_scene_materials_uses_bounded_concurrency_and_keeps_order(self):
         scene = TimedScriptScene(1, 1, 1, ("parallel query",), 0.0, 20.0)
         candidates = [

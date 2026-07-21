@@ -241,6 +241,7 @@ def _style_for(
     *,
     random_colors: bool,
     random_animations: bool,
+    position: str | None = None,
 ) -> tuple[str, str, str, str]:
     selector = random.Random(f"{task_id}:{subtitle_index}:{term_index}")
     color = selector.choice(EMPHASIS_COLORS) if random_colors else _DEFAULT_COLOR
@@ -251,12 +252,12 @@ def _style_for(
     )
     group = selector.choice(_ANIMATION_SOUND_GROUPS[animation])
     sound_id = selector.choice(_SOUND_IDS_BY_GROUP[group])
-    position = selector.choices(
+    selected_position = position if position in EMPHASIS_POSITIONS else selector.choices(
         EMPHASIS_POSITIONS,
         weights=EMPHASIS_POSITION_WEIGHTS,
         k=1,
     )[0]
-    return color, animation, sound_id, position
+    return color, animation, sound_id, selected_position
 
 
 def _cue_for_term(
@@ -315,6 +316,10 @@ def _arrange_grouped_cues(
     arranged: list[EmphasisCue] = []
     for group_key, group in grouped.items():
         ordered = sorted(group, key=lambda item: (item.start, item.text))
+        # A source row (or a legacy subtitle item) is one visual page.  Its
+        # emphasis terms can animate independently, but using more than one
+        # face colour on that page makes the composition look accidental.
+        page_color = ordered[0].color
         layer_entries: dict[int, int] = {}
         for order, cue in enumerate(ordered):
             layer = order % len(EMPHASIS_POSITIONS)
@@ -322,7 +327,7 @@ def _arrange_grouped_cues(
                 previous_index = layer_entries[layer]
                 previous = arranged[previous_index]
                 arranged[previous_index] = replace(previous, end=cue.start)
-            arranged.append(replace(cue, layer=layer))
+            arranged.append(replace(cue, color=page_color, layer=layer))
             layer_entries[layer] = len(arranged) - 1
 
     return sorted(arranged, key=lambda item: (item.start, item.layer, item.text))
@@ -333,6 +338,7 @@ def build_markdown_emphasis_cues(
     timed_rows,
     random_colors: bool = True,
     random_animations: bool = True,
+    positions_by_row_terms: dict[int, dict[str, str]] | None = None,
 ) -> list[EmphasisCue]:
     cues: list[EmphasisCue] = []
     term_index = 0
@@ -359,6 +365,10 @@ def build_markdown_emphasis_cues(
                 term_index,
                 random_colors=random_colors,
                 random_animations=random_animations,
+                # Markdown 稿件的每个重点词默认居中；WebUI 可分别覆盖。
+                position=(positions_by_row_terms or {})
+                .get(row.number, {})
+                .get(term, "center"),
             )
             cues.append(
                 EmphasisCue(
